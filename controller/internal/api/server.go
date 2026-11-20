@@ -638,13 +638,16 @@ func (s *Server) handleSetDeviceNetwork(w http.ResponseWriter, r *http.Request) 
 
 	// The operator can type management addresses here, so a typo must die at
 	// the door: the renderer would otherwise write "10.0.10.999/24" into the
-	// AP's network file and the AP would come up unreachable.
+	// AP's network file and the AP would come up unreachable. A subnet mask
+	// is mandatory: without it a bare address silently inherits whatever the
+	// template interface declares — and netifd falls back to /32 when the
+	// template declares nothing, which kills the subnet.
 	for name, addrs := range ov.IPAddr {
 		for _, a := range addrs {
 			if validAddress(a) {
 				continue
 			}
-			writeError(w, http.StatusBadRequest, fmt.Errorf("interface %q: %q is not an IP address (optionally with a /prefix)", name, a))
+			writeError(w, http.StatusBadRequest, fmt.Errorf("interface %q: %q must carry a subnet mask, e.g. 10.10.10.252/24", name, a))
 			return
 		}
 	}
@@ -1133,16 +1136,19 @@ func shortMAC(mac string) string {
 	return strings.ReplaceAll(mac, ":", "")
 }
 
-// validAddress accepts what a UCI ipaddr option may carry: a bare IP or an IP
-// with a prefix length. Both families are allowed because the renderer copies
-// the string verbatim.
+// validAddress accepts the only form an operator-typed management address may
+// take: an IP with an explicit prefix length ("10.10.10.252/24"). A bare IP is
+// rejected on purpose — the renderer copies the string verbatim, and without
+// the prefix netifd would fall back to /32 wherever the template interface
+// declares no netmask option, silently breaking the subnet. Both families are
+// allowed because the renderer copies the string verbatim.
 func validAddress(s string) bool {
 	s = strings.TrimSpace(s)
-	if strings.Contains(s, "/") {
-		_, _, err := net.ParseCIDR(s)
-		return err == nil
+	if !strings.Contains(s, "/") {
+		return false
 	}
-	return net.ParseIP(s) != nil
+	_, _, err := net.ParseCIDR(s)
+	return err == nil
 }
 
 func logRequests(log *slog.Logger, next http.Handler) http.Handler {

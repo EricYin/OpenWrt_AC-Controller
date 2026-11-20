@@ -119,7 +119,10 @@ func TestAdoptAddressConflictReportsThenForce(t *testing.T) {
 }
 
 // A typo in a typed address must not reach the renderer: the AP would come up
-// unreachable with a nonsense option in its network file.
+// unreachable with a nonsense option in its network file. A bare address is
+// likewise refused — without the prefix netifd would fall back to /32 on any
+// template interface that declares no netmask option, silently breaking the
+// subnet. The mask is mandatory everywhere.
 func TestSetDeviceNetworkRejectsInvalidAddress(t *testing.T) {
 	f := newFixture(t)
 
@@ -129,6 +132,15 @@ func TestSetDeviceNetworkRejectsInvalidAddress(t *testing.T) {
 		t.Fatalf("invalid address accepted: %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+
+	// A well-formed but mask-less address is rejected too: it would inherit
+	// the template netmask — or /32 where the template declares none.
+	bare := f.do(http.MethodPut, "/api/v1/devices/"+testMAC+"/network",
+		map[string]any{"ipaddr": map[string][]string{"lan": {"10.0.10.50"}}})
+	if bare.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bare address accepted: %d, want 400", bare.StatusCode)
+	}
+	bare.Body.Close()
 
 	ok := f.do(http.MethodPut, "/api/v1/devices/"+testMAC+"/network",
 		map[string]any{"ipaddr": map[string][]string{"lan": {"10.0.10.50/24"}}})

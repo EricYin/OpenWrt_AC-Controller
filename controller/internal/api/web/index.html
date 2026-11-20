@@ -1386,7 +1386,8 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
           <label>管理地址（每接口一行；留空＝自动错开）
             <span class="note" style="display:block;margin-top:2px">
               留空时控制器在模板地址基础上自动错开，保证多台 AP 不重复；手填的地址成为本机显式覆盖，
-              若与其他设备冲突，下发时会弹窗告警并允许强制下发。格式：<code>10.10.10.252</code> 或 <code>10.10.10.252/24</code>
+              若与其他设备冲突，下发时会弹窗告警并允许强制下发。<b>统一要求带子网掩码</b>：
+              <code>10.10.10.252/24</code>——裸地址会继承模板接口的 netmask，模板未声明时 OpenWrt 按 /32 兜底导致网段失效。
             </span>
           </label>
           <div id="port-ip-rows"></div>
@@ -2269,7 +2270,7 @@ function openIPEdit(mac) {
 
   const note = document.createElement('p');
   note.className = 'note';
-  note.textContent = '按模板接口填写管理地址（如 10.10.10.252，可带 /24 前缀）；留空＝在模板地址基础上自动错开。保存后需重新下发才生效，下发前会显示地址变更与冲突确认。';
+  note.textContent = '按模板接口填写管理地址，统一要求带子网掩码（如 10.10.10.252/24）——裸地址会继承模板接口的 netmask，模板未声明时 OpenWrt 按 /32 兜底导致网段失效。留空＝在模板地址基础上自动错开。保存后需重新下发才生效，下发前会显示地址变更与冲突确认。';
   const rows = document.createElement('div');
   rows.id = 'ip-edit-rows';
   renderIPRows(rows, dev);
@@ -5038,6 +5039,29 @@ function collectVLANs(tbodyId) {
   return vlans;
 }
 
+// 接口的掩码前缀：优先模板接口的 netmask 字段，其次模板地址自带的 /n。
+// 用于把旧的裸地址覆盖在显示时补成带掩码的形式（保存统一要求带掩码），
+// 两处都拿不到时返回 null，裸值原样显示（保存时会被校验拦下要求补写）。
+function ifacePrefix(i) {
+  if (i.netmask) {
+    const oct = String(i.netmask).split('.').map(Number);
+    if (oct.length === 4 && oct.every(x => x >= 0 && x <= 255)) {
+      const ones = oct.reduce((a, x) => a + ((x & 0xff).toString(2).match(/1/g) || []).length, 0);
+      return ones;
+    }
+  }
+  const m = ((i.ipaddr || [])[0] || '').match(/\/(\d{1,2})$/);
+  return m ? Number(m[1]) : null;
+}
+
+// 把存储的地址补成带掩码的显示形式；已有前缀或推不出掩码时原样返回。
+function withDisplayPrefix(a, iface) {
+  a = String(a).trim();
+  if (a.includes('/')) return a;
+  const p = ifacePrefix(iface);
+  return p !== null ? a + '/' + p : a;
+}
+
 // 管理地址编辑：每台设备一份 per-unit 覆盖（network_params.ipaddr）。留空的
 // 接口不写进覆盖，交给下发时的自动错开；填了就成了显式地址，冲突会在下发
 // 前的预检弹窗里报出来，而不是被静默改写。端口覆盖面板与「修改管理 IP」
@@ -5067,7 +5091,7 @@ function renderIPRows(host, dev) {
     name.style.cssText = 'min-width:52px';
     const input = document.createElement('input');
     input.dataset.iface = i.name;
-    input.value = (current[i.name] || []).join(', ');
+    input.value = (current[i.name] || []).map(a => withDisplayPrefix(a, i)).join(', ');
     input.placeholder = '自动（模板 ' + (i.ipaddr || []).join(', ') + '）';
     input.style.cssText = 'flex:1 1 auto;min-width:200px';
     row.append(name, input);
@@ -5077,8 +5101,9 @@ function renderIPRows(host, dev) {
 
 // 把 host 里的输入合并进 ov.ipaddr：留空的接口从覆盖中删除（回到“模板 +
 // 自动错开”），填写的按接口覆盖；全部为空则整个删除 ipaddr 键。原样修改
-// ov 并返回；host 里没有输入框时不动 ov。格式错误由服务端在 PUT 时拒绝
-// （报错带接口名），这里不做校验以免两处规则漂移。
+// ov 并返回；host 里没有输入框时不动 ov。每个非空条目必须带 /掩码（统一
+// 要求：裸地址会继承模板 netmask，模板未声明时 netifd 按 /32 兜底）——
+// 这里做快速拦截，精确校验由服务端 PUT 时的 ParseCIDR 兜底。
 function mergeIPInputs(ov, host) {
   const ipInputs = Array.from(host.querySelectorAll('input[data-iface]'));
   if (!ipInputs.length) return ov;
@@ -5086,6 +5111,11 @@ function mergeIPInputs(ov, host) {
   for (const inp of ipInputs) {
     const name = inp.dataset.iface;
     const addrs = inp.value.trim().split(/[\s,]+/).filter(Boolean);
+    for (const a of addrs) {
+      if (!a.includes('/')) {
+        throw new Error('接口 ' + name + ' 的地址 ' + a + ' 缺少子网掩码，请写成 ' + a + '/24（统一要求带掩码）');
+      }
+    }
     if (!addrs.length) delete ipaddr[name];
     else ipaddr[name] = addrs;
   }

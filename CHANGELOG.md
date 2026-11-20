@@ -1,5 +1,20 @@
 # 修改记录 / Changelog
 
+## v0.7.8
+
+### 变更（AC 侧，行为收紧）
+
+- **管理地址覆盖统一要求带子网掩码**：`PUT /devices/{mac}/network` 的 `ipaddr` 条目现在必须写成 `10.10.10.252/24` 形式，裸地址返回 400（报错带接口名并给出示例）。原因：渲染层原样拷贝地址字符串——裸地址会继承模板接口的 netmask 选项，而模板接口未声明 netmask 时 OpenWrt netifd 按 **/32** 兜底（`proto.c` 默认值），子网直接失效；带前缀则永远精确且优先于 netmask 选项，是唯一两种来源下都安全的写法。
+  - 前端同步收紧：「修改管理 IP」弹窗与「端口 / 设备覆盖」面板的保存合并逻辑在输入时快速拦截缺掩码的条目（报错带接口名与示例）；两处说明文案改为统一要求带掩码。
+  - 旧数据兼容：显示时按模板接口的 netmask（或模板地址自带的 /n）把历史裸值自动补成带掩码形式，未改动的字段保存后会归一化为带掩码写法，不会因历史裸值阻塞保存；自动错开写回的地址不受影响（掩码信息来自模板，形式与模板一致）。
+  - 冲突检测按精确 IP 匹配，与掩码写法无关，行为不变。
+
+### English
+
+- **Management-address overrides now require an explicit subnet mask**: `PUT /devices/{mac}/network` rejects bare addresses in `ipaddr` with a 400 (error names the interface and gives an example). Rationale: the renderer copies the string verbatim — a bare address inherits the template interface's `netmask` option, and netifd falls back to **/32** (`proto.c` default) wherever the template declares none, silently breaking the subnet. With a prefix the address is always exact and takes precedence over the netmask option, making it the only form safe under both sources.
+  - The web UI enforces the same rule on save (per-interface error naming the missing mask) and both hint texts now require the mask.
+  - Backwards compatible: stored bare values are displayed with the mask derived from the template interface (netmask option, or the template address's own `/n` suffix), so untouched fields normalize to the prefixed form on the next save instead of blocking it. Auto-staggered addresses are unaffected. Conflict detection remains exact-IP and mask-independent.
+
 ## v0.7.7
 
 ### 功能（AC 侧）
