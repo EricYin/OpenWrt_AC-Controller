@@ -1,5 +1,24 @@
 # 修改记录 / Changelog
 
+## v0.7.1
+
+### 修复
+
+- **整机重刷后的 409 死锁**：AP 重刷/换机后设备密钥变更、重置代次归零，控制器上保留的旧纳管绑定会让登记永远报 `this MAC is already registered to another AP identity`，「解绑」无法清除。新增管理动作 `DELETE /api/v1/devices/{mac}`（设备操作弹窗「删除设备」），整行删除纳管绑定、客户端与遥测历史；删除后 AP 以新身份重新登记待采纳。无绑定记录的 MAC 现在接受全新登记（此前空绑定也会被 409 拒绝）。Agent 端 409 报错改为可操作指引。
+- 定时任务（状态 LED / 周期重启）按控制器本地时区计算；文档补充容器 `TZ` 写法与 8 小时偏差的排查（本次生产事故源于部署 compose 手写了非法 `TZ` 值，模板本身正确）。
+
+### 升级说明
+
+- 软件包版本不变（AP 侧无代码变更，仅 Agent 报错文案）；AC 升级容器镜像即可。
+
+### English
+
+- New admin action `DELETE /api/v1/devices/{mac}` clears the enrollment binding kept for a re-initialised AP, which previously dead-locked enrollment with a 409 forever. Enrollment now accepts a fresh claim for a MAC without a stored binding. The agent's 409 message explains the recovery. Scheduling docs now cover container TZ and the +8h symptom.
+
+### 下载 / Downloads
+
+- AC 容器镜像：`naoki66/openwrt_ac-controller:v0.7.1` 或 `ghcr.io/naoki66/openwrt_ac-controller:v0.7.1`。
+
 ## v0.7.0
 
 ### 自动发现与采纳

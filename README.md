@@ -316,6 +316,8 @@ curl -s -b ac.jar http://<AC_IP>:8090/api/v1/devices
 |---|---|
 | AP 一直 `discovering` | compose 是否 `network_mode: host`；AC 是否监听 UDP 29820；是否同一广播域；跨三层是否在 LuCI 填了「控制器地址」 |
 | 每 20s 收到 401 | 核对 AC「AP 管理」和 AP 的 LuCI 是否使用相同的共享密钥 |
+| AP 报 "already registered to another AP identity"（409） | 该 MAC 在控制器上保留着旧纳管绑定（多为整机重刷/换机后设备密钥变更）。在 AC 设备操作里点「删除设备」清掉记录，AP 会以新身份重新登记待采纳；「解绑」不能清此绑定 |
+| 定时任务时间差 8 小时 | 定时按控制器本地时区计算：确认容器 `TZ` 有效（compose 里写 `TZ: Asia/Shanghai`，不要手写 `${TZ:-...}`）；改动时区后重新保存各定时 |
 | 心跳认证失败 | 核对共享密钥、控制器地址，以及 AC 和 AP 的版本是否匹配 |
 | 容器起不来 / 数据库报错 | `./data` 是否存在且属主 `1000:1000` |
 | `connected` 但没有 rev | 设备仍是 `pending`，页面未采纳 |
