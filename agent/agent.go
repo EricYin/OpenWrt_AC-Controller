@@ -417,7 +417,11 @@ type Agent struct {
 	// that stops answering must be re-resolved, but broadcasting every 20s
 	// would be pointless wake-ups on a healthy LAN.
 	helloFailures int
-	nextDiscover  time.Time
+	// orphan401s counts consecutive hello 401s while the agent still holds a
+	// management binding. A single 401 can be a hiccup (replay, restart);
+	// three in a row mean the controller no longer holds this AP's record.
+	orphan401s   int
+	nextDiscover time.Time
 	// lastOwnNeighbors is the freshest 802.11k self-report, used to rebuild
 	// neighbour lists from peers without another ubus read.
 	lastOwnNeighbors []proto.NeighborBSS
@@ -492,6 +496,13 @@ const neighborRefreshCyclesOffline = 30
 const (
 	rediscoverAfterFailures = 3
 	rediscoverDelay         = 60 * time.Second
+	// orphanHello401Limit: a bound AP whose controller no longer holds its
+	// record (the operator deleted the device — the reflash recovery — or
+	// restored an older database) would otherwise repeat the 401 forever.
+	// Three consecutive rejections make it unlikely to be a one-off hiccup
+	// before the binding is dropped and the same enrollment identity is
+	// offered again; the controller still requires approval afterwards.
+	orphanHello401Limit = 3
 	// steeringProbeInterval caches the init-script probe. The enabled state of a
 	// steering daemon changes only when an apply changes it, so probing three
 	// init scripts every heartbeat was avoidable process churn.
@@ -1024,12 +1035,35 @@ func (a *Agent) Step(ctx context.Context) error {
 		a.rt.LastHelloOK = false
 		a.rt.LastHelloError = err.Error()
 		var httpErr *helloHTTPError
-		if a.state.ManagementKey == "" && len(a.trustedController) > 0 && errors.As(err, &httpErr) && httpErr.status == http.StatusUnauthorized {
-			// The controller may have restored an older database. Offer the
-			// same AP identity again; the controller still requires approval
-			// for a new pending record and rejects any different registered key.
-			a.client.deviceKey = ""
-			a.rt.Adopted = false
+		if errors.As(err, &httpErr) && httpErr.status == http.StatusUnauthorized && len(a.trustedController) > 0 {
+			if a.state.ManagementKey == "" {
+				// The controller may have restored an older database. Offer the
+				// same AP identity again; the controller still requires approval
+				// for a new pending record and rejects any different registered key.
+				a.client.deviceKey = ""
+				a.rt.Adopted = false
+			} else {
+				// Bound but rejected: the controller no longer holds this AP's
+				// record. The management traffic key cannot be re-derived, so
+				// without intervention the 401 repeats forever. After the limit,
+				// drop the management binding (the enrollment identity, its key
+				// and the controller pin stay) and let the next cycle enroll
+				// again. The controller lists the AP as pending and nothing is
+				// pushed before an operator adopts it.
+				a.orphan401s++
+				if a.orphan401s >= orphanHello401Limit {
+					a.Log.Warn("controller rejects this AP's hello; dropping the management binding to re-enroll",
+						"failures", a.orphan401s, "mac", a.client.deviceMAC)
+					a.state.ManagementKey = ""
+					a.state.ManagementTrafficKey = ""
+					if err := a.saveState(); err != nil {
+						a.Log.Error("save state after orphaned binding", "err", err)
+					}
+					a.client.deviceKey = ""
+					a.client.enrollmentACID = ""
+					a.rt.Adopted = false
+				}
+			}
 		}
 
 		// A discovered controller that vanished may have moved (DHCP, reinstall,
@@ -1052,6 +1086,7 @@ func (a *Agent) Step(ctx context.Context) error {
 		return err
 	}
 	a.helloFailures = 0
+	a.orphan401s = 0
 	// A successful hello is the controller's acknowledgement that it can still
 	// reach this AP after an address move; the watchdog can stand down.
 	if !minimalHello && a.confirmedRevision(reply) {

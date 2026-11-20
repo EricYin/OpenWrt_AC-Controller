@@ -409,7 +409,13 @@ return view.extend({
 					_('Last error: %s').format(status.last_hello_error)));
 		}
 
-		this.card.appendChild(E('div', { class: 'cbi-page-actions' }, [
+		/* cbi-page-actions in the stock themes carries negative margins meant
+		 * for full-width page footers; inside this card they push the buttons
+		 * past the panel edge. The inline styles pin the row back inside. */
+		this.card.appendChild(E('div', {
+			class: 'cbi-page-actions',
+			style: 'margin:14px 0 0;padding:0;border-top:0;text-align:right'
+		}, [
 			E('button', {
 				class: 'btn cbi-button cbi-button-action',
 				click: ui.createHandlerFn(this, 'handleRestart')

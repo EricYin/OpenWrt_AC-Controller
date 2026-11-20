@@ -220,6 +220,72 @@ func TestDeleteDeviceRecoversReflashedAP(t *testing.T) {
 	}
 }
 
+// A bound AP whose record is deleted on the controller (the reflash recovery,
+// a database restore) must not repeat the hello 401 forever. After the orphan
+// limit the agent drops its management binding and offers the same enrollment
+// identity again; adoption then works without touching the AP.
+func TestOrphanBindingSelfHealsAfterDelete(t *testing.T) {
+	t.Setenv("AC_SECRET", "")
+	ac := newACWithSecret(t, "")
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg, _, _ := newAgentConfig(t, ac)
+
+	a, err := agent.New(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ac.adopt(t, apMAC)
+	if err := a.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a.State().AppliedRev != 1 || a.State().ManagementKey == "" {
+		t.Fatal("agent did not reach the managed state")
+	}
+
+	ac.store.DeleteDevice(ctx, apMAC)
+
+	// The first two heartbeats only count; the binding stays.
+	for i := 0; i < 2; i++ {
+		if err := a.Step(ctx); err == nil || !strings.Contains(err.Error(), "401") {
+			t.Fatalf("step %d after delete: %v, want hello 401", i+1, err)
+		}
+		if a.State().ManagementKey == "" {
+			t.Fatalf("binding dropped after only %d rejections", i+1)
+		}
+	}
+
+	// The third rejection crosses the orphan limit: the binding is dropped
+	// (this step still returns the hello error), and the next cycle falls
+	// back to enrollment with the same identity.
+	if err := a.Step(ctx); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("step 3 after delete: %v, want hello 401", err)
+	}
+	if a.State().ManagementKey != "" {
+		t.Fatal("management key survived the orphan limit")
+	}
+	if err := a.Step(ctx); err != nil {
+		t.Fatalf("re-enroll after orphan limit: %v", err)
+	}
+	if d := ac.device(t, apMAC); d.State != store.StatePending {
+		t.Fatalf("state after self-heal = %s, want pending", d.State)
+	}
+	if a.State().ManagementKey != "" {
+		t.Fatal("management key survived the self-heal")
+	}
+
+	ac.adopt(t, apMAC)
+	if err := a.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a.State().AppliedRev != 1 || a.State().ManagementKey == "" {
+		t.Fatal("readoption after self-heal did not restore management")
+	}
+}
+
 func TestSwitchControllerAndReadopt(t *testing.T) {
 	t.Setenv("AC_SECRET", "")
 	oldAC := newACWithSecret(t, "")

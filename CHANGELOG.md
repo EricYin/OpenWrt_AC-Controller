@@ -1,5 +1,21 @@
 # 修改记录 / Changelog
 
+## v0.7.3
+
+### 修复（AP 侧）
+
+- **删除设备后 AP 的 401 死循环自愈**：AP 已绑定时若控制器上的记录被删除（409 恢复操作、数据库回滚），agent 会永远收到 `hello: controller returned 401`。现在连续 3 次心跳 401 后，agent 自动放弃管理绑定（保留纳管身份与控制器钉定），以同一身份重新登记为待采纳，采纳后恢复管理。
+- **LuCI 状态卡按钮溢出**：状态卡底部「重启 agent / 重置纳管」按钮受主题 `cbi-page-actions` 负边距影响溢出面板边缘，改为内联样式约束在卡片内。
+- 软件包版本：`ac-agent 0.3.0-2`、`luci-app-ac-agent 1.0.0-7`。当前受影响的 AP 可直接点「重置纳管」立即恢复，无需等待升级。
+
+### English
+
+- Bound agents whose controller record was deleted now drop the management binding after three consecutive hello 401s and re-enroll with the same identity; adoption restores management. The LuCI status card no longer lets its action buttons overflow the panel. Packages: `ac-agent 0.3.0-2`, `luci-app-ac-agent 1.0.0-7`.
+
+### 下载 / Downloads
+
+- AP 安装本次 Release 的 `ac-agent` 与 `luci-app-ac-agent`；AC 侧无代码变更，容器镜像可按需更新 `naoki66/openwrt_ac-controller:v0.7.3`。
+
 ## v0.7.2
 
 ### 修复
