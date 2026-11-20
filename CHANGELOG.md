@@ -1,5 +1,19 @@
 # 修改记录 / Changelog
 
+## v0.7.4
+
+### 修复
+
+- **二次确认弹窗点击无反应**：v0.7.2 引入的 `uiConfirm` 助手有两处缺陷——确认/取消回调引用了未定义的收尾函数（点击即抛错，Promise 永不兑现）；确认按钮 `className` 整体赋值抹掉了稳定的 `ui-confirm-ok` 选择器类（第二次打开弹窗时找不到按钮，弹窗打不开）。两处均已修复，并经 Playwright 无头浏览器实测五条路径：确认、取消、primary 变体、复用元素二次打开、Esc 关闭。
+
+### English
+
+- Fixed two defects in the v0.7.2 `uiConfirm` helper (undefined resolve handler; destructive className assignment dropping the stable ok-button class). All five interaction paths verified headlessly: ok, cancel, primary variant, element reuse on reopen, Escape.
+
+### 下载 / Downloads
+
+- AC 容器镜像：`naoki66/openwrt_ac-controller:v0.7.4` 或 `ghcr.io/naoki66/openwrt_ac-controller:v0.7.4`。
+
 ## v0.7.3
 
 ### 修复（AP 侧）

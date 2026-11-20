@@ -2008,9 +2008,14 @@ function uiConfirm(text, opts) {
     noteEl.textContent = opts.note || '';
     noteEl.style.display = opts.note ? '' : 'none';
     okBtn.textContent = opts.okText || '确认执行';
-    okBtn.className = 'ui-btn ' + (opts.danger === false ? 'ui-btn-primary' : 'ui-btn-danger');
+    // 只切换红/蓝变体类：className 整体赋值会抹掉 ui-confirm-ok，
+    // 后续打开就再也找不到确认按钮。
+    okBtn.classList.remove('ui-btn-primary', 'ui-btn-danger');
+    okBtn.classList.add(opts.danger === false ? 'ui-btn-primary' : 'ui-btn-danger');
     uiConfirmEl.querySelectorAll('button').forEach((b) => { b.disabled = false; });
     uiConfirmEl.hidden = false;
+    // done 收尾并兑现 Promise：cleanup 先解绑全部监听，避免二次触发。
+    const done = (v) => { cleanup(); resolve(v); };
     const onKey = (e) => { if (e.key === 'Escape') done(false); };
     const onMask = (e) => { if (e.target === uiConfirmEl) done(false); };
     function cleanup() {
