@@ -3,6 +3,7 @@ package provision
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -94,7 +95,8 @@ func TestAdoptStaggerSkipsUsedAddress(t *testing.T) {
 }
 
 // An operator-typed override that collides with another unit's address is
-// refused with the owner named, not silently rewritten.
+// refused on the default path — but the refusal carries the structured list
+// (not just a sentence) and an explicit force lets the push through.
 func TestAdoptRefusesDuplicateExplicitAddress(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
@@ -102,11 +104,9 @@ func TestAdoptRefusesDuplicateExplicitAddress(t *testing.T) {
 		t.Fatalf("seed template: %v", err)
 	}
 
-	r1, err := svc.Adopt(ctx, ap1, "net")
-	if err != nil {
+	if _, err := svc.Adopt(ctx, ap1, "net"); err != nil {
 		t.Fatalf("adopt ap1: %v", err)
 	}
-	_ = r1
 
 	blob, _ := json.Marshal(model.DeviceNetwork{
 		IPAddr: map[string][]string{"lan": {"10.0.10.1/24"}},
@@ -115,12 +115,69 @@ func TestAdoptRefusesDuplicateExplicitAddress(t *testing.T) {
 		t.Fatalf("set ap2 network: %v", err)
 	}
 
-	_, err = svc.Adopt(ctx, ap2, "net")
+	_, err := svc.Adopt(ctx, ap2, "net")
 	if err == nil {
-		t.Fatal("adopting a second unit with ap1's address was allowed")
+		t.Fatal("adopting a second unit with ap1's address was allowed without force")
 	}
-	if !strings.Contains(err.Error(), ap1) || !strings.Contains(err.Error(), "10.0.10.1") {
-		t.Errorf("error should name the conflicting device and address: %v", err)
+	var conflict *AddressConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error is %T, want *AddressConflictError: %v", err, err)
+	}
+	if len(conflict.Conflicts) != 1 ||
+		conflict.Conflicts[0].IP != "10.0.10.1" ||
+		conflict.Conflicts[0].Interface != "lan" ||
+		conflict.Conflicts[0].Device != ap1 {
+		t.Errorf("conflicts = %+v, want one entry for 10.0.10.1@lan owned by %s", conflict.Conflicts, ap1)
+	}
+
+	// Forced push keeps the typed address; the operator owns the duplicate.
+	res, err := svc.AdoptWith(ctx, ap2, "net", PushOptions{Force: true})
+	if err != nil {
+		t.Fatalf("forced adopt: %v", err)
+	}
+	network := string(extract(t, svc, ap2, res.Rev)[render.FileNetwork])
+	if !strings.Contains(network, "list ipaddr '10.0.10.1/24'") {
+		t.Errorf("forced push did not keep the operator's address:\n%s", network)
+	}
+}
+
+// Preflight never fails on a conflict: it lists them, so the UI can warn and
+// offer a forced push instead of showing a dead end.
+func TestPreflightReportsAddressConflict(t *testing.T) {
+	ctx := context.Background()
+	svc := newService(t)
+	if err := svc.Store.UpsertTemplate(ctx, managedNetworkTemplate()); err != nil {
+		t.Fatalf("seed template: %v", err)
+	}
+	if _, err := svc.Adopt(ctx, ap1, "net"); err != nil {
+		t.Fatalf("adopt ap1: %v", err)
+	}
+
+	blob, _ := json.Marshal(model.DeviceNetwork{
+		IPAddr: map[string][]string{"lan": {"10.0.10.1/24"}},
+	})
+	if err := svc.Store.SetDeviceNetwork(ctx, ap2, string(blob)); err != nil {
+		t.Fatalf("set ap2 network: %v", err)
+	}
+
+	pf, err := svc.Preflight(ctx, ap2, "net")
+	if err != nil {
+		t.Fatalf("preflight must not fail on a conflict: %v", err)
+	}
+	if len(pf.Conflicts) != 1 || pf.Conflicts[0].IP != "10.0.10.1" ||
+		pf.Conflicts[0].Device != ap1 || pf.Conflicts[0].Interface != "lan" {
+		t.Errorf("preflight conflicts = %+v", pf.Conflicts)
+	}
+	// The target address list still shows what would be pushed.
+	if len(pf.TargetAddrs) != 1 || pf.TargetAddrs[0] != "10.0.10.1" {
+		t.Errorf("target addrs = %v", pf.TargetAddrs)
+	}
+
+	// A clean unit has no conflicts, so the UI shows no warning at all.
+	if pf1, err := svc.Preflight(ctx, ap1, "net"); err != nil {
+		t.Fatalf("preflight ap1: %v", err)
+	} else if len(pf1.Conflicts) != 0 {
+		t.Errorf("ap1 conflicts = %+v, want none", pf1.Conflicts)
 	}
 }
 

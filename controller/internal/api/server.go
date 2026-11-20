@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -549,6 +550,10 @@ func (s *Server) handleAdopt(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		TemplateID string `json:"template_id"`
+		// Force accepts a duplicate management address the preflight reported.
+		// Default false: the controller staggers or refuses, never silently
+		// duplicates.
+		Force bool `json:"force"`
 	}
 	// An empty body is legitimate: fall back to the seeded default template.
 	if r.ContentLength > 0 {
@@ -561,7 +566,7 @@ func (s *Server) handleAdopt(w http.ResponseWriter, r *http.Request) {
 		req.TemplateID = s.adoptTemplateFor(r, mac)
 	}
 
-	res, err := s.Provision.Adopt(r.Context(), mac, req.TemplateID)
+	res, err := s.Provision.AdoptWith(r.Context(), mac, req.TemplateID, provision.PushOptions{Force: req.Force})
 	if err != nil {
 		writeProvisionError(w, err)
 		return
@@ -574,7 +579,18 @@ func (s *Server) handleRepush(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	res, err := s.Provision.Repush(r.Context(), mac)
+
+	var req struct {
+		Force bool `json:"force"`
+	}
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+			return
+		}
+	}
+
+	res, err := s.Provision.RepushWith(r.Context(), mac, provision.PushOptions{Force: req.Force})
 	if err != nil {
 		writeProvisionError(w, err)
 		return
@@ -616,6 +632,19 @@ func (s *Server) handleSetDeviceNetwork(w http.ResponseWriter, r *http.Request) 
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&ov); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+			return
+		}
+	}
+
+	// The operator can type management addresses here, so a typo must die at
+	// the door: the renderer would otherwise write "10.0.10.999/24" into the
+	// AP's network file and the AP would come up unreachable.
+	for name, addrs := range ov.IPAddr {
+		for _, a := range addrs {
+			if validAddress(a) {
+				continue
+			}
+			writeError(w, http.StatusBadRequest, fmt.Errorf("interface %q: %q is not an IP address (optionally with a /prefix)", name, a))
 			return
 		}
 	}
@@ -1063,6 +1092,18 @@ func writeStoreError(w http.ResponseWriter, err error) {
 }
 
 func writeProvisionError(w http.ResponseWriter, err error) {
+	// An address conflict is not a validation failure: the package is fine,
+	// the operator just has to decide whether to duplicate the address. 409
+	// carries the list so the UI can name every address and offer "push
+	// anyway" instead of making the operator parse a sentence.
+	var conflict *provision.AddressConflictError
+	if errors.As(err, &conflict) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":     err.Error(),
+			"conflicts": conflict.Conflicts,
+		})
+		return
+	}
 	switch {
 	case errors.Is(err, store.ErrDeviceChanged):
 		writeError(w, http.StatusConflict, err)
@@ -1090,6 +1131,18 @@ func writeError(w http.ResponseWriter, code int, err error) {
 
 func shortMAC(mac string) string {
 	return strings.ReplaceAll(mac, ":", "")
+}
+
+// validAddress accepts what a UCI ipaddr option may carry: a bare IP or an IP
+// with a prefix length. Both families are allowed because the renderer copies
+// the string verbatim.
+func validAddress(s string) bool {
+	s = strings.TrimSpace(s)
+	if strings.Contains(s, "/") {
+		_, _, err := net.ParseCIDR(s)
+		return err == nil
+	}
+	return net.ParseIP(s) != nil
 }
 
 func logRequests(log *slog.Logger, next http.Handler) http.Handler {

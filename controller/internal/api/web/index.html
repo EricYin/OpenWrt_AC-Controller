@@ -1378,6 +1378,17 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
         </div>
 
         <div class="form" style="margin-bottom:10px">
+          <label>管理地址（每接口一行；留空＝自动错开）
+            <span class="note" style="display:block;margin-top:2px">
+              留空时控制器在模板地址基础上自动错开，保证多台 AP 不重复；手填的地址成为本机显式覆盖，
+              若与其他设备冲突，下发时会弹窗告警并允许强制下发。格式：<code>10.10.10.252</code> 或 <code>10.10.10.252/24</code>
+            </span>
+          </label>
+          <div id="port-ip-rows"></div>
+          <button id="port-ip-auto" style="margin-top:8px">全部恢复自动</button>
+        </div>
+
+        <div class="form" style="margin-bottom:10px">
           <label>启用本机 VLAN 覆盖
             <input type="checkbox" id="port-vlan-enabled" />
           </label>
@@ -2039,20 +2050,45 @@ function uiConfirm(text, opts) {
   });
 }
 
-// 下发前预检：模板可能移除 AP 当前的管理地址。把“SSH 会断、AP 换地址上线”
-// 变成一次明确确认，而不是下发后才发现。
-async function confirmAddressMove(mac, templateId) {
+// 下发前预检：两件事都要说清楚再动手。
+//   1. 模板可能移除 AP 当前的管理地址 —— 地址迁移要确认；
+//   2. 操作员手填的管理地址可能与其他设备重复 —— 冲突要列出具体 IP 与被
+//      占用方。默认方案是自动错开，冲突只在手填地址时出现；出现时仍然允许
+//      强制下发（返回 force），由操作员承担同网段地址争用的后果。
+async function confirmPush(mac, templateId) {
   const q = templateId ? '?template_id=' + encodeURIComponent(templateId) : '';
   const pf = await api('GET', '/api/v1/devices/' + encodeURIComponent(mac) + '/preflight' + q);
-  if (!pf || !pf.will_move) return true;
-  const from = pf.current_ip || '未知';
-  const to = pf.new_mgmt || (pf.target_addrs && pf.target_addrs[0]) || '未知';
-  return uiConfirm(
-    '注意：本次下发会更换 AP 的管理地址。\n\n'
-    + '当前管理地址：' + from + '\n'
-    + '下发后地址：' + to + '\n\n'
-    + '下发瞬间 SSH/管理连接会中断，AP 将改用新地址上线。',
-    { title: '管理地址将变更', danger: false, okText: '继续下发' });
+  const conflicts = (pf && pf.conflicts) || [];
+  const move = !!(pf && pf.will_move);
+  if (!conflicts.length && !move) return { ok: true, force: false };
+
+  const blocks = [];
+  if (move) {
+    const from = pf.current_ip || '未知';
+    const to = pf.new_mgmt || (pf.target_addrs && pf.target_addrs[0]) || '未知';
+    blocks.push('本次下发会更换 AP 的管理地址。\n\n'
+      + '当前管理地址：' + from + '\n'
+      + '下发后地址：' + to + '\n\n'
+      + '下发瞬间 SSH/管理连接会中断，AP 将改用新地址上线。');
+  }
+  if (conflicts.length) {
+    blocks.push('以下地址已被其他设备占用，强制下发会造成同网段 IP 冲突：\n\n'
+      + conflicts.map(c => {
+        const owner = deviceCache.find(x => x.mac === c.device);
+        const who = owner && owner.hostname ? owner.hostname + '（' + c.device + '）' : c.device;
+        return '· ' + c.ip + ' —— 接口 ' + (c.interface || '?') + '，已被 ' + who + ' 使用';
+      }).join('\n'));
+  }
+
+  const ok = await uiConfirm(blocks.join('\n\n'), {
+    title: conflicts.length ? '管理地址冲突' : '管理地址将变更',
+    danger: conflicts.length > 0,
+    okText: conflicts.length ? '仍然强制下发' : '继续下发',
+    note: conflicts.length
+      ? '强制下发后两台设备会争用同一地址。若不想冲突，先在「端口 / 设备覆盖」里给本机填一个专属地址，再重新下发。'
+      : undefined
+  });
+  return { ok: ok, force: ok && conflicts.length > 0 };
 }
 
 async function act(action, mac, btn) {
@@ -2071,13 +2107,19 @@ async function act(action, mac, btn) {
         say('请先选择采纳使用的模板（default 只是占位示例，不要用于真机）', 'err');
         return;
       }
-      if (!(await confirmAddressMove(mac, templateId))) { say('已取消下发'); return; }
-      const res = await api('POST', base + '/adopt', { template_id: templateId });
-      say(mac + ' 已采纳到模板 ' + templateId + '，生成 rev ' + res.rev + '（' + res.size + ' 字节）', 'ok');
+      const decision = await confirmPush(mac, templateId);
+      if (!decision.ok) { say('已取消下发'); return; }
+      // force 只在预检报告了地址冲突、且操作员在弹窗里明确选择强制时才为
+      // true；默认路径永远是自动错开。
+      const res = await api('POST', base + '/adopt', { template_id: templateId, force: decision.force });
+      say(mac + ' 已采纳到模板 ' + templateId + '，生成 rev ' + res.rev + '（' + res.size + ' 字节）'
+        + (decision.force ? '（强制：地址与其他设备重复）' : ''), 'ok');
     } else if (action === 'repush') {
-      if (!(await confirmAddressMove(mac))) { say('已取消下发'); return; }
-      const res = await api('POST', base + '/repush');
-      say(mac + ' 已重新下发，rev ' + res.rev, 'ok');
+      const decision = await confirmPush(mac);
+      if (!decision.ok) { say('已取消下发'); return; }
+      const res = await api('POST', base + '/repush', { force: decision.force });
+      say(mac + ' 已重新下发，rev ' + res.rev
+        + (decision.force ? '（强制：地址与其他设备重复）' : ''), 'ok');
     } else if (action === 'release') {
       if (!(await uiConfirm('「解绑」会让设备回到待采纳状态，rev 与端口参数保留，需重新采纳才会继续接收配置。', { title: '解绑设备', okText: '确认解绑' }))) { say('已取消解绑'); return; }
       await api('POST', base + '/release');
@@ -4858,9 +4900,47 @@ function collectVLANs(tbodyId) {
   return vlans;
 }
 
+// 管理地址编辑：每台设备一份 per-unit 覆盖（network_params.ipaddr）。留空的
+// 接口不写进覆盖，交给下发时的自动错开；填了就成了显式地址，冲突会在下发
+// 前的预检弹窗里报出来，而不是被静默改写。
+function renderPortIPs(dev) {
+  const host = $('port-ip-rows');
+  host.innerHTML = '';
+  const tpl = dev ? templates.find(t => t.id === dev.template_id) : null;
+  const ifaces = ((tpl && tpl.bridge && tpl.bridge.interfaces) || [])
+    .filter(i => i.proto === 'static' && (i.ipaddr || []).length);
+  if (!dev || !ifaces.length) {
+    const hint = document.createElement('span');
+    hint.className = 'wl-roam-title';
+    hint.textContent = dev ? '所选设备模板没有静态管理地址' : '选择设备后显示其模板的管理地址';
+    host.appendChild(hint);
+    return;
+  }
+  let ov = {};
+  if (dev.network_params) {
+    try { ov = JSON.parse(dev.network_params) || {}; } catch (_) { ov = {}; }
+  }
+  const current = ov.ipaddr || {};
+  for (const i of ifaces) {
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;gap:10px;align-items:center;margin:6px 0';
+    const name = document.createElement('code');
+    name.textContent = i.name;
+    name.style.cssText = 'min-width:52px';
+    const input = document.createElement('input');
+    input.dataset.iface = i.name;
+    input.value = (current[i.name] || []).join(', ');
+    input.placeholder = '自动（模板 ' + (i.ipaddr || []).join(', ') + '）';
+    input.style.cssText = 'flex:1 1 auto;min-width:200px';
+    row.append(name, input);
+    host.appendChild(row);
+  }
+}
+
 function renderPortDevice() {
   $('port-vlan-rows').innerHTML = '';
   const dev = deviceCache.find(x => x.mac === portDeviceMac);
+  renderPortIPs(dev);
   if (!dev) {
     $('port-bridge').value = '';
     $('port-igmp').value = '';
@@ -5162,6 +5242,21 @@ async function savePortOverride(clear) {
     const igmp = $('port-igmp').value;
     if (igmp !== '') ov.igmp_snooping = igmp === '1';
 
+    // 管理地址：编辑区里留空的接口从覆盖中移除（回到“模板 + 自动错开”），
+    // 填写的按接口覆盖。格式错误由服务端在 PUT 时拒绝（含行号/接口名）。
+    const ipInputs = Array.from($('port-ip-rows').querySelectorAll('input[data-iface]'));
+    if (ipInputs.length) {
+      const ipaddr = Object.assign({}, ov.ipaddr || {});
+      for (const inp of ipInputs) {
+        const name = inp.dataset.iface;
+        const addrs = inp.value.trim().split(/[\s,]+/).filter(Boolean);
+        if (!addrs.length) delete ipaddr[name];
+        else ipaddr[name] = addrs;
+      }
+      if (Object.keys(ipaddr).length) ov.ipaddr = ipaddr;
+      else delete ov.ipaddr;
+    }
+
     if ($('port-vlan-enabled').checked) {
       const tpl = templates.find(t => t.id === dev.template_id) || {};
       const tbr = tpl.bridge || {};
@@ -5192,6 +5287,13 @@ $('port-save').addEventListener('click', async () => {
 $('port-clear').addEventListener('click', async () => {
   try { await savePortOverride(true); }
   catch (e) { if (!noteUnauthorized(e)) sayPort(e.message, 'err'); }
+});
+
+// 「全部恢复自动」只清空编辑框，仍需点「保存覆盖」才生效——与端口字段一致，
+// 避免一个按钮同时改两类参数却不给撤销机会。
+$('port-ip-auto').addEventListener('click', () => {
+  for (const inp of $('port-ip-rows').querySelectorAll('input[data-iface]')) inp.value = '';
+  sayPort('管理地址已清空为自动分配；点「保存覆盖」生效', '');
 });
 
 // --- 无线服务视图 ------------------------------------------------------------

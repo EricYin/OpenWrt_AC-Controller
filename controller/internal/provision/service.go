@@ -60,6 +60,12 @@ type Result struct {
 // Adopting an already adopted device with a different template is allowed and
 // simply produces the next revision.
 func (s *Service) Adopt(ctx context.Context, mac, templateID string) (Result, error) {
+	return s.AdoptWith(ctx, mac, templateID, PushOptions{})
+}
+
+// AdoptWith is Adopt with the operator's explicit acceptances: Force pushes a
+// duplicate management address that preflight reported as a conflict.
+func (s *Service) AdoptWith(ctx context.Context, mac, templateID string, popts PushOptions) (Result, error) {
 	if templateID == "" {
 		return Result{}, fmt.Errorf("%w: template_id is required", ErrTemplateNotFound)
 	}
@@ -68,7 +74,7 @@ func (s *Service) Adopt(ctx context.Context, mac, templateID string) (Result, er
 		return Result{}, err
 	}
 
-	res, err := s.generateAndAdopt(ctx, device, templateID)
+	res, err := s.generateAndAdopt(ctx, device, templateID, popts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -78,6 +84,11 @@ func (s *Service) Adopt(ctx context.Context, mac, templateID string) (Result, er
 
 // Repush regenerates the current template without changing the adoption state.
 func (s *Service) Repush(ctx context.Context, mac string) (Result, error) {
+	return s.RepushWith(ctx, mac, PushOptions{})
+}
+
+// RepushWith is Repush with the operator's explicit acceptances.
+func (s *Service) RepushWith(ctx context.Context, mac string, popts PushOptions) (Result, error) {
 	device, err := s.Store.GetDevice(ctx, mac)
 	if err != nil {
 		return Result{}, err
@@ -88,13 +99,19 @@ func (s *Service) Repush(ctx context.Context, mac string) (Result, error) {
 	if device.TemplateID == "" {
 		return Result{}, ErrNoTemplate
 	}
-	return s.AssignTemplate(ctx, mac, device.TemplateID)
+	return s.AssignTemplateWith(ctx, mac, device.TemplateID, popts)
 }
 
 // AssignTemplate moves an adopted device onto another template and generates
 // the next revision. Adoption state is preserved: the device stays managed,
 // only the configuration it should run changes.
 func (s *Service) AssignTemplate(ctx context.Context, mac, templateID string) (Result, error) {
+	return s.AssignTemplateWith(ctx, mac, templateID, PushOptions{})
+}
+
+// AssignTemplateWith is AssignTemplate with the operator's explicit
+// acceptances.
+func (s *Service) AssignTemplateWith(ctx context.Context, mac, templateID string, popts PushOptions) (Result, error) {
 	if templateID == "" {
 		return Result{}, fmt.Errorf("%w: template_id is required", ErrNoTemplate)
 	}
@@ -106,7 +123,7 @@ func (s *Service) AssignTemplate(ctx context.Context, mac, templateID string) (R
 		return Result{}, ErrNotAdopted
 	}
 
-	res, err := s.generateAndAdopt(ctx, device, templateID)
+	res, err := s.generateAndAdopt(ctx, device, templateID, popts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -114,17 +131,64 @@ func (s *Service) AssignTemplate(ctx context.Context, mac, templateID string) (R
 	return res, nil
 }
 
+// conflictSummary renders conflicts for the event log, one "ip@interface" per
+// entry so an audit reader does not have to parse the slice.
+func conflictSummary(cs []AddressConflict) string {
+	parts := make([]string, 0, len(cs))
+	for _, c := range cs {
+		parts = append(parts, c.IP+"@"+c.Interface+" (owner "+c.Device+")")
+	}
+	return strings.Join(parts, ", ")
+}
+
 // Preflight describes what a push would do to the device's management address.
 // A template takeover can legitimately remove every address the AP is currently
 // reachable at: the package is valid, the agent accepts it, and the operator
 // loses SSH a second later. The UI asks this before an adopt or repush so that
 // an address move is an explicit confirmation instead of a surprise.
+//
+// Conflicts lists operator-typed addresses this push would duplicate. They do
+// not block the preflight — the UI shows them and, if the operator insists,
+// calls the push again with force. Auto-staggered addresses never appear here:
+// allocation picks a free one by construction.
 type Preflight struct {
-	MAC         string   `json:"mac"`
-	CurrentIP   string   `json:"current_ip,omitempty"`
-	TargetAddrs []string `json:"target_addrs,omitempty"`
-	WillMove    bool     `json:"will_move"`
-	NewMgmt     string   `json:"new_mgmt,omitempty"`
+	MAC         string            `json:"mac"`
+	CurrentIP   string            `json:"current_ip,omitempty"`
+	TargetAddrs []string          `json:"target_addrs,omitempty"`
+	WillMove    bool              `json:"will_move"`
+	NewMgmt     string            `json:"new_mgmt,omitempty"`
+	Conflicts   []AddressConflict `json:"conflicts,omitempty"`
+}
+
+// AddressConflict is one management address a push would duplicate: the address
+// in the override, the interface it belongs to, and the device already using it.
+type AddressConflict struct {
+	IP        string `json:"ip"`
+	Interface string `json:"interface"`
+	Device    string `json:"device"`
+}
+
+// AddressConflictError refuses a push whose explicit addresses collide, unless
+// the operator forced it. The API maps it onto 409 with the list so the UI can
+// name every address instead of re-parsing one sentence.
+type AddressConflictError struct {
+	Conflicts []AddressConflict
+}
+
+func (e *AddressConflictError) Error() string {
+	parts := make([]string, 0, len(e.Conflicts))
+	for _, c := range e.Conflicts {
+		parts = append(parts, fmt.Sprintf("%s (interface %s, already used by %s)", c.IP, c.Interface, c.Device))
+	}
+	return "provision: address conflict: " + strings.Join(parts, "; ") +
+		"; push again with force to send it anyway"
+}
+
+// PushOptions carries what the operator explicitly accepted in the UI. Force is
+// the "I saw the conflict warning and want it anyway" flag: auto-staggering is
+// the default, a duplicate address only happens when someone insists.
+type PushOptions struct {
+	Force bool
 }
 
 // Preflight renders the device's layer-2 plan (without signing or storing a
@@ -146,12 +210,12 @@ func (s *Service) Preflight(ctx context.Context, mac, templateID string) (Prefli
 		return Preflight{}, ErrNoTemplate
 	}
 
-	tpl, err := s.resolveTemplate(ctx, device, templateID)
+	tpl, conflicts, err := s.resolveTemplate(ctx, device, templateID)
 	if err != nil {
 		return Preflight{}, err
 	}
 
-	pf := Preflight{MAC: device.MAC, CurrentIP: device.IP}
+	pf := Preflight{MAC: device.MAC, CurrentIP: device.IP, Conflicts: conflicts}
 	if !tpl.ManagesNetwork() {
 		return pf, nil
 	}
@@ -182,30 +246,45 @@ func (s *Service) Preflight(ctx context.Context, mac, templateID string) (Prefli
 // resolveTemplate applies the per-unit overrides to a template, auto-assigns
 // colliding addresses, and validates the result. Rendering, preflight and
 // signing must all see exactly the same template, so the rules live here rather
-// than in each caller.
-func (s *Service) resolveTemplate(ctx context.Context, device store.Device, templateID string) (model.Template, error) {
-	tpl, _, _, err := s.materializeTemplate(ctx, device, templateID)
-	return tpl, err
+// than in each caller. The second return value lists address conflicts the push
+// would create — preflight reports them, a real push refuses unless forced.
+func (s *Service) resolveTemplate(ctx context.Context, device store.Device, templateID string) (model.Template, []AddressConflict, error) {
+	m, err := s.materializeTemplate(ctx, device, templateID)
+	if err != nil {
+		return model.Template{}, nil, err
+	}
+	return m.Template, m.Conflicts, nil
 }
 
-// materializeTemplate is resolveTemplate with the details persist needs: the
-// effective per-unit override, and the addresses auto-allocation had to
-// rewrite (interface=address entries). A non-empty autoAssigned list means the
-// caller should store the override, so the allocation survives re-pushes
-// instead of being recomputed — and possibly moved — on every push.
-func (s *Service) materializeTemplate(ctx context.Context, device store.Device, templateID string) (model.Template, model.DeviceNetwork, []string, error) {
+// materialized is what a push needs from the template pipeline: the effective
+// template, the override to persist, the addresses auto-allocation rewrote, and
+// the operator-typed duplicates that would collide.
+type materialized struct {
+	Template     model.Template
+	Override     model.DeviceNetwork
+	AutoAssigned []string
+	Conflicts    []AddressConflict
+}
+
+// materializeTemplate is the single place that turns a stored template plus a
+// unit's overrides into the template that will be rendered: overrides applied,
+// colliding template addresses staggered, conflicts recorded. A non-empty
+// AutoAssigned list means the caller should store the override, so the
+// allocation survives re-pushes instead of being recomputed — and possibly
+// moved — on every push.
+func (s *Service) materializeTemplate(ctx context.Context, device store.Device, templateID string) (materialized, error) {
 	tpl, err := s.Store.GetTemplate(ctx, templateID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("%w: %q", ErrTemplateNotFound, templateID)
+			return materialized{}, fmt.Errorf("%w: %q", ErrTemplateNotFound, templateID)
 		}
-		return model.Template{}, model.DeviceNetwork{}, nil, err
+		return materialized{}, err
 	}
 
 	var ov model.DeviceNetwork
 	if device.NetworkParams != "" {
 		if err := json.Unmarshal([]byte(device.NetworkParams), &ov); err != nil {
-			return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s network_params: %w", device.MAC, err)
+			return materialized{}, fmt.Errorf("provision: device %s network_params: %w", device.MAC, err)
 		}
 	}
 
@@ -221,14 +300,14 @@ func (s *Service) materializeTemplate(ctx context.Context, device store.Device, 
 		if device.RadioOverrides != "" {
 			var ro model.DeviceRadioOverrides
 			if err := json.Unmarshal([]byte(device.RadioOverrides), &ro); err != nil {
-				return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s radio_overrides: %w", device.MAC, err)
+				return materialized{}, fmt.Errorf("provision: device %s radio_overrides: %w", device.MAC, err)
 			}
 			tpl = tpl.WithDeviceRadios(ro)
 		}
 		if err := tpl.Validate(); err != nil {
-			return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: template %q is invalid: %w", templateID, err)
+			return materialized{}, fmt.Errorf("provision: template %q is invalid: %w", templateID, err)
 		}
-		return tpl, ov, nil, nil
+		return materialized{Template: tpl, Override: ov}, nil
 	}
 
 	// A device override that names an interface the template does not
@@ -243,7 +322,7 @@ func (s *Service) materializeTemplate(ctx context.Context, device store.Device, 
 	// with no management address.
 	if unknown := tpl.UnmanagedInterfaceAddrs(ov); len(unknown) > 0 {
 		sort.Strings(unknown)
-		return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s network_params address %v: no such interface in template %q "+
+		return materialized{}, fmt.Errorf("provision: device %s network_params address %v: no such interface in template %q "+
 			"(the device still carries a layer-2 override written for another template; "+
 			"adopt it with the matching template_id, or clear the override via PUT /api/v1/devices/%s/network)",
 			device.MAC, unknown, templateID, device.MAC)
@@ -251,7 +330,7 @@ func (s *Service) materializeTemplate(ctx context.Context, device store.Device, 
 
 	used, err := s.usedAddresses(ctx, device.MAC)
 	if err != nil {
-		return model.Template{}, model.DeviceNetwork{}, nil, err
+		return materialized{}, err
 	}
 
 	tpl = tpl.WithDeviceNetwork(ov)
@@ -262,17 +341,20 @@ func (s *Service) materializeTemplate(ctx context.Context, device store.Device, 
 	if device.RadioOverrides != "" {
 		var ro model.DeviceRadioOverrides
 		if err := json.Unmarshal([]byte(device.RadioOverrides), &ro); err != nil {
-			return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s radio_overrides: %w", device.MAC, err)
+			return materialized{}, fmt.Errorf("provision: device %s radio_overrides: %w", device.MAC, err)
 		}
 		tpl = tpl.WithDeviceRadios(ro)
 	}
 
 	// Auto-stagger: a template address another unit already runs must not be
 	// rendered again for this one. Operator-written values are never rewritten
-	// — those are checked for collisions instead, because silently moving an
-	// address the operator typed is worse than an error that names the device
-	// already holding it.
-	var autoAssigned []string
+	// — silently moving an address the operator typed is worse than telling
+	// them it collides — but they are not a hard failure either: the conflict
+	// is reported, and the push proceeds only when explicitly forced.
+	var (
+		autoAssigned []string
+		conflicts    []AddressConflict
+	)
 	touched := map[string]bool{}
 	for i := range tpl.Bridge.Interfaces {
 		iface := &tpl.Bridge.Interfaces[i]
@@ -290,10 +372,9 @@ func (s *Service) materializeTemplate(ctx context.Context, device store.Device, 
 			}
 			if explicit {
 				if owner, taken := used[bare]; taken {
-					return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf(
-						"provision: device %s assigns %s to interface %q, but device %s already uses it; "+
-							"pick another address or clear the override via PUT /api/v1/devices/%s/network to auto-stagger",
-						device.MAC, bare, iface.Name, owner, device.MAC)
+					conflicts = append(conflicts, AddressConflict{
+						IP: bare, Interface: iface.Name, Device: owner,
+					})
 				}
 				out = append(out, addr)
 				continue
@@ -305,11 +386,11 @@ func (s *Service) materializeTemplate(ctx context.Context, device store.Device, 
 			}
 			ip, mask, hadSuffix, err := parseAddrNet(addr, iface.Netmask)
 			if err != nil {
-				return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s interface %q: %w", device.MAC, iface.Name, err)
+				return materialized{}, fmt.Errorf("provision: device %s interface %q: %w", device.MAC, iface.Name, err)
 			}
 			free, err := nextFree(ip, mask, used)
 			if err != nil {
-				return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s interface %q: %w", device.MAC, iface.Name, err)
+				return materialized{}, fmt.Errorf("provision: device %s interface %q: %w", device.MAC, iface.Name, err)
 			}
 			assigned := free.String()
 			if hadSuffix {
@@ -341,16 +422,33 @@ func (s *Service) materializeTemplate(ctx context.Context, device store.Device, 
 	}
 
 	if err := tpl.Validate(); err != nil {
-		return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: template %q is invalid: %w", templateID, err)
+		return materialized{}, fmt.Errorf("provision: template %q is invalid: %w", templateID, err)
 	}
-	return tpl, ov, autoAssigned, nil
+	return materialized{
+		Template:     tpl,
+		Override:     ov,
+		AutoAssigned: autoAssigned,
+		Conflicts:    conflicts,
+	}, nil
 }
 
 // generateAndAdopt renders the next revision and commits it with the adoption.
-func (s *Service) generateAndAdopt(ctx context.Context, device store.Device, templateID string) (Result, error) {
-	tpl, ov, autoAssigned, err := s.materializeTemplate(ctx, device, templateID)
+func (s *Service) generateAndAdopt(ctx context.Context, device store.Device, templateID string, popts PushOptions) (Result, error) {
+	m, err := s.materializeTemplate(ctx, device, templateID)
 	if err != nil {
 		return Result{}, err
+	}
+	tpl, ov, autoAssigned := m.Template, m.Override, m.AutoAssigned
+
+	// A duplicate management address is what the operator asked for or not:
+	// without force it is a refusal carrying the list, with force it is a push
+	// that keeps the typed address and the operator owns the outcome.
+	if len(m.Conflicts) > 0 && !popts.Force {
+		return Result{}, &AddressConflictError{Conflicts: m.Conflicts}
+	}
+	if len(m.Conflicts) > 0 {
+		s.Store.LogEvent(ctx, "ipconflict", device.MAC,
+			fmt.Sprintf("pushed with duplicate addresses %s (forced)", conflictSummary(m.Conflicts)))
 	}
 
 	// An auto-staggered address becomes part of the unit's override so the

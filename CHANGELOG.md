@@ -1,5 +1,23 @@
 # 修改记录 / Changelog
 
+## v0.7.6
+
+### 功能（AC 侧）
+
+- **每设备自定义管理地址 + 冲突告警可强制下发**：设备覆盖面板新增「管理地址」编辑区，按模板接口逐个填写（留空即保持默认的自动错开）。手填地址若与其他设备已占用地址重复，下发前的预检弹窗会以「管理地址冲突」列出每个冲突的 IP、接口与被占用设备，操作员确认后可**强制下发**；取消则不下发。默认路径保持不变：留空时控制器在同网段自动分配空闲地址。
+  - 接口：`POST /devices/{mac}/adopt` 与 `/repush` 接受 `{"force":true}`；不带 force 的冲突返回 409 并附 `conflicts` 数组（`ip`/`interface`/`device`），由 UI 直接渲染，不再依赖解析错误文本。
+  - 预检 `GET /devices/{mac}/preflight` 冲突时不再报错，改为在 `conflicts` 字段返回清单（`will_move` 语义不变）。
+  - `PUT /devices/{mac}/network` 校验地址格式（`10.0.0.1` 或 `10.0.0.1/24`），错写地址在入口即被拒绝，不会写进 AP 的 network 配置。
+  - 强制下发会记一条 `ipconflict` 事件，便于事后审计。
+
+### English
+
+- **Per-device custom management address, with a conflict warning that can still be forced**: the device-override panel gained a "management address" editor (one field per template interface; leave it empty to keep the default auto-stagger). If a typed address duplicates one another unit already uses, the pre-push preflight dialog lists every conflict — IP, interface, and the device holding it — and lets the operator push anyway. Default behaviour is unchanged: empty fields mean the controller allocates a free address in the subnet.
+  - `POST /devices/{mac}/adopt` and `/repush` accept `{"force":true}`; an unforced conflict returns 409 with a `conflicts` array (`ip`/`interface`/`device`) the UI renders directly.
+  - `GET /devices/{mac}/preflight` reports conflicts in a `conflicts` field instead of failing.
+  - `PUT /devices/{mac}/network` validates address syntax, so a typo cannot reach the AP's network file.
+  - A forced duplicate logs an `ipconflict` event for later audit.
+
 ## v0.7.5
 
 ### 功能（AC 侧）
