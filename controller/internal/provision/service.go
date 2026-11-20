@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -178,73 +179,194 @@ func (s *Service) Preflight(ctx context.Context, mac, templateID string) (Prefli
 	return pf, nil
 }
 
-// resolveTemplate applies the per-unit overrides to a template and validates
-// the result. Rendering, preflight and signing must all see exactly the same
-// template, so the rules live here rather than in each caller.
+// resolveTemplate applies the per-unit overrides to a template, auto-assigns
+// colliding addresses, and validates the result. Rendering, preflight and
+// signing must all see exactly the same template, so the rules live here rather
+// than in each caller.
 func (s *Service) resolveTemplate(ctx context.Context, device store.Device, templateID string) (model.Template, error) {
+	tpl, _, _, err := s.materializeTemplate(ctx, device, templateID)
+	return tpl, err
+}
+
+// materializeTemplate is resolveTemplate with the details persist needs: the
+// effective per-unit override, and the addresses auto-allocation had to
+// rewrite (interface=address entries). A non-empty autoAssigned list means the
+// caller should store the override, so the allocation survives re-pushes
+// instead of being recomputed — and possibly moved — on every push.
+func (s *Service) materializeTemplate(ctx context.Context, device store.Device, templateID string) (model.Template, model.DeviceNetwork, []string, error) {
 	tpl, err := s.Store.GetTemplate(ctx, templateID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return model.Template{}, fmt.Errorf("%w: %q", ErrTemplateNotFound, templateID)
+			return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("%w: %q", ErrTemplateNotFound, templateID)
 		}
-		return model.Template{}, err
+		return model.Template{}, model.DeviceNetwork{}, nil, err
 	}
-	// Per-unit layer-2 values are applied before validation: the addresses and
-	// port maps a device reports are part of the configuration being rendered,
-	// so a template that is valid for one unit must be re-checked once its
-	// overrides are in place.
-	//
+
+	var ov model.DeviceNetwork
+	if device.NetworkParams != "" {
+		if err := json.Unmarshal([]byte(device.NetworkParams), &ov); err != nil {
+			return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s network_params: %w", device.MAC, err)
+		}
+	}
+
 	// Only when the template actually manages layer 2. A wireless-only template
 	// renders no network file at all — the AP keeps whatever network config it
 	// was flashed with — so an override recorded for a different template is
 	// neither usable nor wrong: applying it would invent bridge sections the
 	// template never asked for, and validating it would block the operator from
 	// going back to wireless-only on an AP that was managed end to end.
-	if device.NetworkParams != "" && tpl.ManagesNetwork() {
-		var ov model.DeviceNetwork
-		if err := json.Unmarshal([]byte(device.NetworkParams), &ov); err != nil {
-			return model.Template{}, fmt.Errorf("provision: device %s network_params: %w", device.MAC, err)
+	if !tpl.ManagesNetwork() {
+		// Per-unit radio values (channel/power/mode) are a property of this AP,
+		// not of the shared template; they apply on the wireless-only path too.
+		if device.RadioOverrides != "" {
+			var ro model.DeviceRadioOverrides
+			if err := json.Unmarshal([]byte(device.RadioOverrides), &ro); err != nil {
+				return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s radio_overrides: %w", device.MAC, err)
+			}
+			tpl = tpl.WithDeviceRadios(ro)
 		}
-		tpl = tpl.WithDeviceNetwork(ov)
-		// A device override that names an interface the template does not
-		// define would silently drop a management address. Refuse the package
-		// instead: an AP that loses its address is an AP that cannot be reached
-		// to fix it.
-		//
-		// This is also what a re-adopt into the wrong template looks like: the
-		// override survives Release (it records how the box is wired, not what
-		// the controller last pushed), so adopting with a template whose
-		// interfaces do not match reports here rather than rendering a config
-		// with no management address.
-		if unknown := tpl.UnmanagedInterfaceAddrs(ov); len(unknown) > 0 {
-			sort.Strings(unknown)
-			return model.Template{}, fmt.Errorf("provision: device %s network_params address %v: no such interface in template %q "+
-				"(the device still carries a layer-2 override written for another template; "+
-				"adopt it with the matching template_id, or clear the override via PUT /api/v1/devices/%s/network)",
-				device.MAC, unknown, templateID, device.MAC)
+		if err := tpl.Validate(); err != nil {
+			return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: template %q is invalid: %w", templateID, err)
 		}
+		return tpl, ov, nil, nil
 	}
+
+	// A device override that names an interface the template does not
+	// define would silently drop a management address. Refuse the package
+	// instead: an AP that loses its address is an AP that cannot be reached
+	// to fix it.
+	//
+	// This is also what a re-adopt into the wrong template looks like: the
+	// override survives Release (it records how the box is wired, not what
+	// the controller last pushed), so adopting with a template whose
+	// interfaces do not match reports here rather than rendering a config
+	// with no management address.
+	if unknown := tpl.UnmanagedInterfaceAddrs(ov); len(unknown) > 0 {
+		sort.Strings(unknown)
+		return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s network_params address %v: no such interface in template %q "+
+			"(the device still carries a layer-2 override written for another template; "+
+			"adopt it with the matching template_id, or clear the override via PUT /api/v1/devices/%s/network)",
+			device.MAC, unknown, templateID, device.MAC)
+	}
+
+	used, err := s.usedAddresses(ctx, device.MAC)
+	if err != nil {
+		return model.Template{}, model.DeviceNetwork{}, nil, err
+	}
+
+	tpl = tpl.WithDeviceNetwork(ov)
+
 	// Per-unit radio values (channel/power/mode) are a property of this AP, not
 	// of the shared template, so they are applied before validation just like
 	// the layer-2 overrides above.
 	if device.RadioOverrides != "" {
-		var ov model.DeviceRadioOverrides
-		if err := json.Unmarshal([]byte(device.RadioOverrides), &ov); err != nil {
-			return model.Template{}, fmt.Errorf("provision: device %s radio_overrides: %w", device.MAC, err)
+		var ro model.DeviceRadioOverrides
+		if err := json.Unmarshal([]byte(device.RadioOverrides), &ro); err != nil {
+			return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s radio_overrides: %w", device.MAC, err)
 		}
-		tpl = tpl.WithDeviceRadios(ov)
+		tpl = tpl.WithDeviceRadios(ro)
 	}
+
+	// Auto-stagger: a template address another unit already runs must not be
+	// rendered again for this one. Operator-written values are never rewritten
+	// — those are checked for collisions instead, because silently moving an
+	// address the operator typed is worse than an error that names the device
+	// already holding it.
+	var autoAssigned []string
+	touched := map[string]bool{}
+	for i := range tpl.Bridge.Interfaces {
+		iface := &tpl.Bridge.Interfaces[i]
+		if iface.Proto != "static" || len(iface.IPAddr) == 0 {
+			continue
+		}
+		_, explicit := ov.IPAddr[iface.Name]
+
+		var out []string
+		for _, addr := range iface.IPAddr {
+			bare := addressOnly(addr)
+			if bare == "" || strings.Contains(bare, ":") {
+				out = append(out, addr) // IPv6 and empty entries pass through
+				continue
+			}
+			if explicit {
+				if owner, taken := used[bare]; taken {
+					return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf(
+						"provision: device %s assigns %s to interface %q, but device %s already uses it; "+
+							"pick another address or clear the override via PUT /api/v1/devices/%s/network to auto-stagger",
+						device.MAC, bare, iface.Name, owner, device.MAC)
+				}
+				out = append(out, addr)
+				continue
+			}
+			if _, taken := used[bare]; !taken {
+				used[bare] = device.MAC
+				out = append(out, addr)
+				continue
+			}
+			ip, mask, hadSuffix, err := parseAddrNet(addr, iface.Netmask)
+			if err != nil {
+				return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s interface %q: %w", device.MAC, iface.Name, err)
+			}
+			free, err := nextFree(ip, mask, used)
+			if err != nil {
+				return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: device %s interface %q: %w", device.MAC, iface.Name, err)
+			}
+			assigned := free.String()
+			if hadSuffix {
+				ones, _ := mask.Size()
+				assigned += "/" + strconv.Itoa(ones)
+			}
+			used[assigned] = device.MAC
+			out = append(out, assigned)
+			autoAssigned = append(autoAssigned, iface.Name+"="+assigned)
+			touched[iface.Name] = true
+		}
+		iface.IPAddr = out
+	}
+
+	// Persist the staggered addresses by merging them into the override, but
+	// only for the interfaces allocation actually touched: freezing untouched
+	// interfaces into the override would stop later template edits from
+	// reaching this unit.
+	if len(autoAssigned) > 0 {
+		if ov.IPAddr == nil {
+			ov.IPAddr = make(map[string][]string)
+		}
+		for i := range tpl.Bridge.Interfaces {
+			iface := &tpl.Bridge.Interfaces[i]
+			if touched[iface.Name] {
+				ov.IPAddr[iface.Name] = append([]string(nil), iface.IPAddr...)
+			}
+		}
+	}
+
 	if err := tpl.Validate(); err != nil {
-		return model.Template{}, fmt.Errorf("provision: template %q is invalid: %w", templateID, err)
+		return model.Template{}, model.DeviceNetwork{}, nil, fmt.Errorf("provision: template %q is invalid: %w", templateID, err)
 	}
-	return tpl, nil
+	return tpl, ov, autoAssigned, nil
 }
 
 // generateAndAdopt renders the next revision and commits it with the adoption.
 func (s *Service) generateAndAdopt(ctx context.Context, device store.Device, templateID string) (Result, error) {
-	tpl, err := s.resolveTemplate(ctx, device, templateID)
+	tpl, ov, autoAssigned, err := s.materializeTemplate(ctx, device, templateID)
 	if err != nil {
 		return Result{}, err
+	}
+
+	// An auto-staggered address becomes part of the unit's override so the
+	// next re-push keeps it. Without this every push would re-run allocation
+	// against the same used-set, and a fleet could reshuffle addresses at
+	// random whenever one unit is released.
+	if len(autoAssigned) > 0 {
+		blob, err := json.Marshal(ov)
+		if err != nil {
+			return Result{}, fmt.Errorf("provision: device %s network_params: %w", device.MAC, err)
+		}
+		if err := s.Store.SetDeviceNetwork(ctx, device.MAC, string(blob)); err != nil {
+			return Result{}, fmt.Errorf("provision: persist auto-assigned address for %s: %w", device.MAC, err)
+		}
+		s.Store.LogEvent(ctx, "ipalloc", device.MAC,
+			fmt.Sprintf("auto-assigned %v to avoid a duplicate address", autoAssigned))
 	}
 
 	opts := render.Options{Prefix: render.ACPrefix}

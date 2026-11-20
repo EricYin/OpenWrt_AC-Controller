@@ -2,6 +2,10 @@
 
 ## v0.7.5
 
+### 功能（AC 侧）
+
+- **模板下发自动错开管理 IP**：同一份网络模板下发给多台 AP 时不再重复同一静态地址——首台保留模板基址，后续设备在同网段内自动分配下一个空闲主机地址（基址、基址+1……直至最后一个主机地址，超过后回绕到最小主机地址），并写入该设备的 `network_params.ipaddr` 覆盖，重推、预检结果稳定不变。占用集合包括所有设备的 per-unit 覆盖与已采纳设备实际渲染的模板地址（pending 设备的覆盖同样保留）。操作员显式填写的地址若与其他设备冲突，采纳/重推会被拒绝并指名占用该地址的设备，而不是静默改写。预检（preflight）展示的是错开后的实际地址。设备网络参数页可见自动分配的地址，可随时改。
+
 ### 修复（AP 侧）
 
 - **状态卡显示 agent 版本与配套 AC 管理器要求**：原「agent」行只显示裸版本号，现改为「agent 版本」行，显示 `ac-agent <版本>`、二进制所讲的协议版本（status.json 新增 `protocol_version` 字段）与启动时间；新增「配套 AC 管理器」行，提示需要 v0.7.0 及以上的控制器（协议版本 9），且管理器与 agent 应一并升级。若 agent 上报的协议版本与本界面预期不一致，额外显示警告条。
@@ -11,6 +15,7 @@
 
 ### English
 
+- **Auto-stagger duplicate template IPs**: when the same network-managing template is pushed to multiple APs, the first unit keeps the template's base address and every following unit is auto-assigned the next free host in the same subnet (wrapping past the broadcast address when needed). The allocation is persisted into the unit's `network_params.ipaddr` override, so re-pushes and preflights stay stable. Operator-written overrides are never rewritten — a colliding explicit address is refused with the name of the device already holding it. Preflight reports the staggered address.
 - The status card now shows the agent version with the wire protocol it speaks (`protocol_version` added to status.json) and a "Matching controller" row requiring controller v0.7.0+ (protocol version 9); a protocol mismatch between the running agent and the interface raises a warning banner.
 - "Reset management" is now a red button — both the card trigger and the confirmation submit (`cbi-button-negative` plus inline red so it stays red in every theme).
 - The action-row overflow under argon is fixed for good: the card no longer reuses `cbi-page-actions` (whose theme-specific negative margins caused the issue); it renders its own right-aligned, wrapping flex row instead.
