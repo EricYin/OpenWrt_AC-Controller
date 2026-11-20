@@ -1975,6 +1975,65 @@ async function downloadPackage(mac, rev) {
   URL.revokeObjectURL(url);
 }
 
+// 统一的二次确认弹窗：复用「危险操作二次确认」的 ui-confirm 样式，
+// 取代原生 confirm（原生弹窗样式与站点主题割裂，且文案无法排版）。
+// act() 在等待用户选择期间已禁用页面全部按钮，这里打开后要恢复弹窗
+// 自己的按钮，否则用户无法应答。
+let uiConfirmEl = null;
+function uiConfirm(text, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    if (!uiConfirmEl) {
+      uiConfirmEl = document.createElement('div');
+      uiConfirmEl.className = 'ui-confirm-mask';
+      uiConfirmEl.hidden = true;
+      uiConfirmEl.innerHTML =
+        '<div class="ui-confirm" role="dialog" aria-modal="true">'
+        + '<div class="ui-confirm-head"><span class="ui-confirm-ic">!</span><b class="ui-confirm-title">确认操作</b>'
+        + '<button type="button" class="ui-confirm-x" aria-label="关闭">×</button></div>'
+        + '<div class="ui-confirm-body"><p class="ui-confirm-text"></p>'
+        + '<p class="ui-confirm-note"></p></div>'
+        + '<div class="ui-confirm-foot"><button type="button" class="ui-btn ui-confirm-cancel">取消</button>'
+        + '<button type="button" class="ui-btn ui-btn-danger ui-confirm-ok">确认执行</button></div></div>';
+      document.body.appendChild(uiConfirmEl);
+    }
+    const title = uiConfirmEl.querySelector('.ui-confirm-title');
+    const textEl = uiConfirmEl.querySelector('.ui-confirm-text');
+    const noteEl = uiConfirmEl.querySelector('.ui-confirm-note');
+    const okBtn = uiConfirmEl.querySelector('.ui-confirm-ok');
+    const cancelBtn = uiConfirmEl.querySelector('.ui-confirm-cancel');
+    title.textContent = opts.title || '确认操作';
+    textEl.textContent = text;
+    textEl.style.whiteSpace = 'pre-line';
+    noteEl.textContent = opts.note || '';
+    noteEl.style.display = opts.note ? '' : 'none';
+    okBtn.textContent = opts.okText || '确认执行';
+    okBtn.className = 'ui-btn ' + (opts.danger === false ? 'ui-btn-primary' : 'ui-btn-danger');
+    uiConfirmEl.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+    uiConfirmEl.hidden = false;
+    const onKey = (e) => { if (e.key === 'Escape') done(false); };
+    const onMask = (e) => { if (e.target === uiConfirmEl) done(false); };
+    function cleanup() {
+      uiConfirmEl.hidden = true;
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      uiConfirmEl.removeEventListener('click', onMask);
+      document.removeEventListener('keydown', onKey);
+      const x = uiConfirmEl.querySelector('.ui-confirm-x');
+      if (x) x.removeEventListener('click', onCancel);
+    }
+    function onOk() { done(true); }
+    function onCancel() { done(false); }
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    const x = uiConfirmEl.querySelector('.ui-confirm-x');
+    if (x) x.addEventListener('click', onCancel);
+    uiConfirmEl.addEventListener('click', onMask);
+    document.addEventListener('keydown', onKey);
+    if (cancelBtn.focus) cancelBtn.focus();
+  });
+}
+
 // 下发前预检：模板可能移除 AP 当前的管理地址。把“SSH 会断、AP 换地址上线”
 // 变成一次明确确认，而不是下发后才发现。
 async function confirmAddressMove(mac, templateId) {
@@ -1983,12 +2042,12 @@ async function confirmAddressMove(mac, templateId) {
   if (!pf || !pf.will_move) return true;
   const from = pf.current_ip || '未知';
   const to = pf.new_mgmt || (pf.target_addrs && pf.target_addrs[0]) || '未知';
-  return confirm(
-    '注意：本次下发会更换 AP 的管理地址。\n\n' +
-    '当前管理地址：' + from + '\n' +
-    '下发后地址：' + to + '\n\n' +
-    '下发瞬间 SSH/管理连接会中断，AP 将改用新地址上线。\n' +
-    '确认继续？');
+  return uiConfirm(
+    '注意：本次下发会更换 AP 的管理地址。\n\n'
+    + '当前管理地址：' + from + '\n'
+    + '下发后地址：' + to + '\n\n'
+    + '下发瞬间 SSH/管理连接会中断，AP 将改用新地址上线。',
+    { title: '管理地址将变更', danger: false, okText: '继续下发' });
 }
 
 async function act(action, mac, btn) {
@@ -2015,26 +2074,28 @@ async function act(action, mac, btn) {
       const res = await api('POST', base + '/repush');
       say(mac + ' 已重新下发，rev ' + res.rev, 'ok');
     } else if (action === 'release') {
+      if (!(await uiConfirm('「解绑」会让设备回到待采纳状态，rev 与端口参数保留，需重新采纳才会继续接收配置。', { title: '解绑设备', okText: '确认解绑' }))) { say('已取消解绑'); return; }
       await api('POST', base + '/release');
       say(mac + ' 已解绑，回到待采纳', 'ok');
     } else if (action === 'delete_device') {
-      if (!confirm(mac + ' 删除该设备的全部记录？\n\n纳管绑定、客户端与遥测历史一并清除，此操作不可恢复。\nAP 会在下个周期以新身份重新登记为待采纳。')) return;
+      if (!(await uiConfirm(
+        '「删除设备」会删除该 MAC 的全部记录：纳管绑定、客户端与遥测历史一并清除，此操作不可恢复。\n\nAP 会在下个周期以新身份重新登记为待采纳。',
+        { title: '删除设备', okText: '确认删除' }))) { say('已取消删除'); return; }
       await api('DELETE', base);
       say(mac + ' 已删除，等待 AP 重新登记', 'ok');
     } else if (action === 'download') {
       await downloadPackage(mac);
       say(mac + ' 配置包已下载', 'ok');
     } else if (action === 'wifi_reload') {
-      if (!confirm(mac + ' 重启无线？客户端会短暂断连后自动重连。')) return;
+      if (!(await uiConfirm('只重启 hostapd，客户端会短暂断连后自动重连。', { title: '重启无线', danger: false, okText: '重启无线', note: '动作会进入设备队列，AP 在下一次心跳（约 20 秒）执行。' }))) { say('已取消'); return; }
       const res = await api('POST', base + '/actions', { type: 'wifi_reload' });
       say(mac + ' 已下发重启无线（' + res.id + '），等待 AP 下次心跳执行', 'ok');
     } else if (action === 'reboot') {
-      if (!confirm(mac + ' 重启整机？AP 将离线约 1 分钟，无线会中断。')) return;
+      if (!(await uiConfirm('AP 将离线约 1 分钟，期间无线全部中断。', { title: '重启 AP', danger: false, okText: '确认重启', note: '动作会进入设备队列，AP 在下一次心跳（约 20 秒）执行。' }))) { say('已取消'); return; }
       const res = await api('POST', base + '/actions', { type: 'reboot' });
       say(mac + ' 已下发重启（' + res.id + '），等待 AP 下次心跳执行', 'ok');
     } else if (action === 'factory_reset') {
-      if (!confirm(mac + ' 恢复出厂？将还原为控制器接管前的无线/网络配置，并解除采纳后重启。')) return;
-      if (!confirm('这是不可逆的现场变更，确认继续？')) return;
+      if (!(await uiConfirm('「恢复出厂」会还原到被接管前的配置并解除采纳，当前 rev 失效，且不可恢复。', { title: '恢复出厂', okText: '确认恢复出厂' }))) { say('已取消'); return; }
       const res = await api('POST', base + '/actions', { type: 'factory_reset' });
       say(mac + ' 已下发恢复出厂（' + res.id + '），等待 AP 下次心跳执行', 'ok');
     }
@@ -6950,43 +7011,10 @@ function fillClientPicker(list) {
   const rowObs = new MutationObserver(() => { updateTodo(); decorateEmpty(); updateStamp(); });
   if (rowsEl) rowObs.observe(rowsEl, { childList: true });
 
-  /* ---------- 危险操作二次确认（capture 拦截 + 确认后放行原点击） ---------- */
-  const mask = mk('div', 'ui-confirm-mask'); mask.id = 'ui-confirm'; mask.hidden = true;
-  mask.innerHTML = '<div class="ui-confirm" role="dialog" aria-modal="true" aria-labelledby="ui-confirm-title">'
-    + '<div class="ui-confirm-head"><span class="ui-confirm-ic">!</span><b id="ui-confirm-title">确认操作</b>'
-    + '<button type="button" class="ui-confirm-x" aria-label="关闭">×</button></div>'
-    + '<div class="ui-confirm-body"><p id="ui-confirm-text"></p>'
-    + '<p class="ui-confirm-note">动作会进入设备队列，AP 在下一次心跳（约 20 秒）执行。</p></div>'
-    + '<div class="ui-confirm-foot"><button type="button" class="ui-btn" id="ui-confirm-cancel">取消</button>'
-    + '<button type="button" class="ui-btn ui-btn-danger" id="ui-confirm-ok">确认执行</button></div></div>';
-  document.body.appendChild(mask);
-  let pendingBtn = null, bypass = false, lastFocus = null;
-  function closeConfirm() { mask.hidden = true; pendingBtn = null; if (lastFocus && lastFocus.focus) lastFocus.focus(); }
-  function openConfirm(btn, text) {
-    pendingBtn = btn; lastFocus = document.activeElement;
-    const t = q('#ui-confirm-text'); if (t) t.textContent = text;
-    mask.hidden = false;
-    const c = q('#ui-confirm-cancel'); if (c && c.focus) c.focus();
-  }
-  const cancel = q('#ui-confirm-cancel'), ok = q('#ui-confirm-ok'), x = q('.ui-confirm-x', mask);
-  if (cancel) cancel.addEventListener('click', closeConfirm);
-  if (x) x.addEventListener('click', closeConfirm);
-  mask.addEventListener('click', (e) => { if (e.target === mask) closeConfirm(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !mask.hidden) closeConfirm(); });
-  if (ok) ok.addEventListener('click', () => {
-    const b = pendingBtn; closeConfirm();
-    if (b) { bypass = true; try { b.click(); } finally { bypass = false; } }
-  });
-  document.addEventListener('click', (e) => {
-    if (bypass) return;
-    const b = e.target && e.target.closest ? e.target.closest('.dev-ops button.danger') : null;
-    if (!b) return;
-    e.preventDefault(); e.stopPropagation();
-    const desc = (b.dataset.action === 'factory_reset')
-      ? '「恢复出厂」会还原到被接管前的配置并解除采纳，当前 rev 失效，且不可恢复。'
-      : '「解绑」会让设备回到待采纳状态，rev 与端口参数保留，需重新采纳才会继续接收配置。';
-    openConfirm(b, desc);
-  }, true);
+  /* 危险操作的二次确认已统一收敛到 act() 内的 uiConfirm 弹窗（复用
+   * ui-confirm 样式）。这里不再做 capture 拦截 + 放行：那套机制会让
+   * danger 按钮先弹样式化确认、再弹 act() 里的原生 confirm，两道弹窗
+   * 风格割裂且文案重复。 */
 
   updateTodo(); decorateEmpty(); updateStamp();
 })();

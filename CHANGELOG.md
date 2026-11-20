@@ -1,5 +1,19 @@
 # 修改记录 / Changelog
 
+## v0.7.2
+
+### 修复
+
+- **设备操作弹窗风格统一**：采纳/重新下发的地址变更确认、解绑、删除设备、重启无线、重启 AP、恢复出厂全部改用站点「危险操作二次确认」弹窗（`ui-confirm` 样式），移除原生 `confirm` 与旧版 capture 拦截（此前危险按钮会先后弹样式化确认与原生确认两道弹窗，且拦截文案与动作不符）。
+
+### English
+
+- Device-action confirmations (address move, release, delete, wifi reload, reboot, factory reset) now use the site's styled confirm dialog instead of the browser-native `confirm()`; the legacy capture-interception layer is removed.
+
+### 下载 / Downloads
+
+- AC 容器镜像：`naoki66/openwrt_ac-controller:v0.7.2` 或 `ghcr.io/naoki66/openwrt_ac-controller:v0.7.2`。
+
 ## v0.7.1
 
 ### 修复
