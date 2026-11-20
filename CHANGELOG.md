@@ -1,5 +1,17 @@
 # 修改记录 / Changelog
 
+## v0.7.7
+
+### 功能（AC 侧）
+
+- **「修改管理 IP」弹窗**：设备操作弹窗新增入口（置于动作列表首位），打开专用对话框按模板 static 接口逐个填写管理地址（如 `10.10.10.252`，可带 `/24` 前缀），留空＝模板地址自动错开。支持「仅保存」（写入本机覆盖，重新下发后生效）与「保存并下发」（保存后立即走预检确认 → 重推，地址迁移与 IP 冲突照常弹窗，冲突时允许强制下发）。未采纳设备显示提示而不渲染编辑区。
+  - 实现上把端口覆盖面板的地址行渲染与保存合并逻辑重构为共用的 `renderIPRows(host, dev)` / `mergeIPInputs(ov, host)`，弹窗与「端口 / 设备覆盖」面板行为完全一致；PUT 复用既有 `PUT /devices/{mac}/network` 与地址格式校验，后端无改动。
+
+### English
+
+- **"Edit management IP" dialog**: the device-actions dialog gained a dedicated entry (first in the list) that opens a per-device editor: one field per static template interface (e.g. `10.10.10.252`, optionally with a `/24` prefix); empty means auto-stagger from the template address. Supports "save only" (writes the unit override, applied on the next push) and "save and push" (save, then the usual preflight confirm → repush, with address-move confirmation and IP-conflict warning that can still be forced). Unadopted devices show a hint instead of the editor.
+  - The row rendering and save-merge logic are refactored into shared `renderIPRows(host, dev)` / `mergeIPInputs(ov, host)` used by both this dialog and the port-override panel; the backend is unchanged (existing `PUT /devices/{mac}/network` with its address validation).
+
 ## v0.7.6
 
 ### 功能（AC 侧）

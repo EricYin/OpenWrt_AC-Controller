@@ -1095,6 +1095,11 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
         <div class="wl-editor modal-card" id="dev-actions"></div>
       </div>
 
+      <!-- 修改管理 IP 弹窗：按模板接口逐个填写，留空＝自动错开 -->
+      <div id="ip-edit-mask" class="modal-mask hidden">
+        <div class="wl-editor modal-card" id="ip-edit"></div>
+      </div>
+
       <div class="msg" id="msg"></div>
 
       <p class="hint">
@@ -2163,6 +2168,7 @@ rows.addEventListener('click', (ev) => {
 
 // 设备操作弹窗：动作连同后果说明集中在这里，点击即执行并关闭。
 const DEV_ACTIONS = [
+  ['edit_ip',       '修改管理 IP', '按模板接口手动指定每接口管理地址，留空＝自动错开；可保存后立即下发', false],
   ['repush',        '重新下发',  '用当前模板重新生成配置包（rev+1），AP 下个心跳周期拉取；若会更换管理地址将先确认', false],
   ['download',      '下载配置包', '下载当前 rev 的签名配置包 JSON，用于离线调试', false],
   ['wifi_reload',   '重启无线',  '只重启 hostapd，客户端短暂断连后自动重连', false],
@@ -2212,6 +2218,8 @@ devActionsCard.addEventListener('click', (ev) => {
   const b = ev.target.closest('button');
   if (!b) return;
   if (b.id === 'dev-actions-close') { closeDevActions(); return; }
+  // edit_ip 不走 act()：它打开的是编辑弹窗而不是立即执行的动作。
+  if (b.dataset.action === 'edit_ip') { closeDevActions(); openIPEdit(b.dataset.mac); return; }
   closeDevActions();
   act(b.dataset.action, b.dataset.mac, b);
 });
@@ -2221,6 +2229,136 @@ devActionsMask.addEventListener('click', (ev) => {
 });
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && !devActionsMask.classList.contains('hidden')) closeDevActions();
+});
+
+// 修改管理 IP 弹窗：比端口覆盖面板更直接的入口。按模板 static 接口逐个填写
+// （留空＝模板地址自动错开），可只保存覆盖，也可保存后立即重推——重推仍走
+// confirmPush 预检，地址迁移要确认、IP 冲突会告警并允许强制下发。
+const ipEditMask = $('ip-edit-mask');
+const ipEditCard = $('ip-edit');
+let ipEditMac = '';
+let ipEditSaving = false;
+
+function closeIPEdit() {
+  ipEditMask.classList.add('hidden');
+  ipEditCard.innerHTML = '';
+  ipEditMac = '';
+}
+
+function openIPEdit(mac) {
+  const dev = deviceCache.find(x => x.mac === mac);
+  ipEditCard.innerHTML = '';
+  ipEditMac = mac;
+  const h = document.createElement('h2');
+  h.textContent = '修改管理 IP';
+  const sub = document.createElement('div');
+  sub.className = 'sub';
+  sub.textContent = ((dev && dev.hostname) || '未知设备') + ' · ' + mac
+    + (dev && dev.ip ? ' · 当前上报 ' + dev.ip : '');
+  ipEditCard.append(h, sub);
+
+  if (!dev || dev.state !== 'adopted' || !dev.template_id) {
+    const p = document.createElement('p');
+    p.className = 'note';
+    p.textContent = '设备尚未采纳到模板：管理地址由「模板 + 本机覆盖」决定，先采纳后再修改。';
+    ipEditCard.appendChild(p);
+    addIPEditClose();
+    ipEditMask.classList.remove('hidden');
+    return;
+  }
+
+  const note = document.createElement('p');
+  note.className = 'note';
+  note.textContent = '按模板接口填写管理地址（如 10.10.10.252，可带 /24 前缀）；留空＝在模板地址基础上自动错开。保存后需重新下发才生效，下发前会显示地址变更与冲突确认。';
+  const rows = document.createElement('div');
+  rows.id = 'ip-edit-rows';
+  renderIPRows(rows, dev);
+  const auto = document.createElement('button');
+  auto.type = 'button';
+  auto.textContent = '全部恢复自动';
+  auto.style.marginTop = '8px';
+  auto.addEventListener('click', () => {
+    for (const i of rows.querySelectorAll('input[data-iface]')) i.value = '';
+  });
+  ipEditCard.append(note, rows, auto, addIPEditFoot());
+  ipEditMask.classList.remove('hidden');
+}
+
+function addIPEditClose() {
+  const row = document.createElement('div');
+  row.style.cssText = 'text-align:right;margin-top:10px';
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.textContent = '关闭';
+  closeBtn.addEventListener('click', closeIPEdit);
+  row.appendChild(closeBtn);
+  ipEditCard.appendChild(row);
+}
+
+function addIPEditFoot() {
+  const foot = document.createElement('div');
+  foot.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.textContent = '取消';
+  cancel.addEventListener('click', closeIPEdit);
+  const saveOnly = document.createElement('button');
+  saveOnly.type = 'button';
+  saveOnly.textContent = '仅保存';
+  saveOnly.addEventListener('click', () => saveIPEdit(false));
+  const savePush = document.createElement('button');
+  savePush.type = 'button';
+  savePush.className = 'primary';
+  savePush.textContent = '保存并下发';
+  savePush.addEventListener('click', () => saveIPEdit(true));
+  foot.append(cancel, saveOnly, savePush);
+  return foot;
+}
+
+async function saveIPEdit(pushNow) {
+  if (ipEditSaving) return;
+  const mac = ipEditMac;
+  const dev = deviceCache.find(x => x.mac === mac);
+  if (!dev) { closeIPEdit(); say('设备不存在，请刷新后重试', 'err'); return; }
+  ipEditSaving = true;
+  try {
+    // 从已存的 network_params 出发，只动 ipaddr，其余字段原样保留。
+    let ov = {};
+    if (dev.network_params) {
+      try { ov = JSON.parse(dev.network_params) || {}; } catch (_) { ov = {}; }
+    }
+    mergeIPInputs(ov, $('ip-edit-rows'));
+    const res = await api('PUT', '/api/v1/devices/' + encodeURIComponent(mac) + '/network', ov);
+    const idx = deviceCache.findIndex(x => x.mac === mac);
+    if (idx >= 0) deviceCache[idx] = res;
+    if (!pushNow) {
+      closeIPEdit();
+      say(mac + ' 管理地址已保存（重新下发后生效）', 'ok');
+      return;
+    }
+    closeIPEdit();
+    const decision = await confirmPush(mac);
+    if (!decision.ok) {
+      say(mac + ' 管理地址已保存；下发已取消，可稍后用「重新下发」应用', 'ok');
+      return;
+    }
+    const r = await api('POST', '/api/v1/devices/' + encodeURIComponent(mac) + '/repush', { force: decision.force });
+    say(mac + ' 已重新下发，rev ' + r.rev
+      + (decision.force ? '（强制：地址与其他设备重复）' : ''), 'ok');
+  } catch (e) {
+    if (!noteUnauthorized(e)) say('保存管理地址失败：' + e.message, 'err');
+    // 保存失败时弹窗可能已关（pushNow 路径），保持已有关闭状态即可。
+  } finally {
+    ipEditSaving = false;
+    refresh();
+  }
+}
+
+ipEditMask.addEventListener('click', (ev) => {
+  if (ev.target === ipEditMask) closeIPEdit();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && !ipEditMask.classList.contains('hidden')) closeIPEdit();
 });
 
 // 周期重启面板：表格只显示已启用的设备；「新增计划」从下拉选一台未启用的
@@ -4902,9 +5040,9 @@ function collectVLANs(tbodyId) {
 
 // 管理地址编辑：每台设备一份 per-unit 覆盖（network_params.ipaddr）。留空的
 // 接口不写进覆盖，交给下发时的自动错开；填了就成了显式地址，冲突会在下发
-// 前的预检弹窗里报出来，而不是被静默改写。
-function renderPortIPs(dev) {
-  const host = $('port-ip-rows');
+// 前的预检弹窗里报出来，而不是被静默改写。端口覆盖面板与「修改管理 IP」
+// 弹窗共用这里的行渲染与保存合并。
+function renderIPRows(host, dev) {
   host.innerHTML = '';
   const tpl = dev ? templates.find(t => t.id === dev.template_id) : null;
   const ifaces = ((tpl && tpl.bridge && tpl.bridge.interfaces) || [])
@@ -4937,10 +5075,29 @@ function renderPortIPs(dev) {
   }
 }
 
+// 把 host 里的输入合并进 ov.ipaddr：留空的接口从覆盖中删除（回到“模板 +
+// 自动错开”），填写的按接口覆盖；全部为空则整个删除 ipaddr 键。原样修改
+// ov 并返回；host 里没有输入框时不动 ov。格式错误由服务端在 PUT 时拒绝
+// （报错带接口名），这里不做校验以免两处规则漂移。
+function mergeIPInputs(ov, host) {
+  const ipInputs = Array.from(host.querySelectorAll('input[data-iface]'));
+  if (!ipInputs.length) return ov;
+  const ipaddr = Object.assign({}, ov.ipaddr || {});
+  for (const inp of ipInputs) {
+    const name = inp.dataset.iface;
+    const addrs = inp.value.trim().split(/[\s,]+/).filter(Boolean);
+    if (!addrs.length) delete ipaddr[name];
+    else ipaddr[name] = addrs;
+  }
+  if (Object.keys(ipaddr).length) ov.ipaddr = ipaddr;
+  else delete ov.ipaddr;
+  return ov;
+}
+
 function renderPortDevice() {
   $('port-vlan-rows').innerHTML = '';
   const dev = deviceCache.find(x => x.mac === portDeviceMac);
-  renderPortIPs(dev);
+  renderIPRows($('port-ip-rows'), dev);
   if (!dev) {
     $('port-bridge').value = '';
     $('port-igmp').value = '';
@@ -5243,19 +5400,8 @@ async function savePortOverride(clear) {
     if (igmp !== '') ov.igmp_snooping = igmp === '1';
 
     // 管理地址：编辑区里留空的接口从覆盖中移除（回到“模板 + 自动错开”），
-    // 填写的按接口覆盖。格式错误由服务端在 PUT 时拒绝（含行号/接口名）。
-    const ipInputs = Array.from($('port-ip-rows').querySelectorAll('input[data-iface]'));
-    if (ipInputs.length) {
-      const ipaddr = Object.assign({}, ov.ipaddr || {});
-      for (const inp of ipInputs) {
-        const name = inp.dataset.iface;
-        const addrs = inp.value.trim().split(/[\s,]+/).filter(Boolean);
-        if (!addrs.length) delete ipaddr[name];
-        else ipaddr[name] = addrs;
-      }
-      if (Object.keys(ipaddr).length) ov.ipaddr = ipaddr;
-      else delete ov.ipaddr;
-    }
+    // 填写的按接口覆盖；全空则整个删除 ipaddr。
+    mergeIPInputs(ov, $('port-ip-rows'));
 
     if ($('port-vlan-enabled').checked) {
       const tpl = templates.find(t => t.id === dev.template_id) || {};
