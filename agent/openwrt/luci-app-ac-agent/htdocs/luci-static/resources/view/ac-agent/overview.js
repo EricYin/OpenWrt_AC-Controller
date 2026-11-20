@@ -22,6 +22,12 @@
 
 var POLL_INTERVAL = 10;
 
+/* The wire protocol this interface was built from; shared/proto/proto.go is
+ * the single definition. The running agent reports its own value in the status
+ * file, so a release mismatch between the packages and the binary is visible
+ * here instead of surfacing as unparseable heartbeats. */
+var INTERFACE_PROTOCOL = 9;
+
 var callStatus = rpc.declare({ object: 'luci.ac_agent', method: 'status' });
 var callRestart = rpc.declare({ object: 'luci.ac_agent', method: 'restart' });
 var callApplyEnabled = rpc.declare({ object: 'luci.ac_agent', method: 'applyEnabled' });
@@ -399,8 +405,31 @@ return view.extend({
 					_('%d APs, %d BSSes · %s').format(status.peer_aps || 0, status.peer_bss || 0, link)));
 			}
 
-			this.card.appendChild(valueRow(_('Agent'),
-				[ status.version || '-', ' ', _('since'), ' ', fmtTime(status.started_at) ]));
+			/* The version an operator can act on: binary version, the protocol it
+			 * speaks, and when it started. "agent 0.3.0" alone forced the reader
+			 * to guess which controller releases pair with it. */
+			this.card.appendChild(valueRow(_('Agent version'),
+				[ 'ac-agent ', E('strong', {}, String(status.version || '-')),
+				  status.protocol_version
+					  ? ' ' + _('protocol v%d').format(status.protocol_version)
+					  : '',
+				  ' · ', _('since'), ' ', fmtTime(status.started_at) ]));
+
+			/* The agent and the controller must speak the same protocol; the
+			 * controller release that introduced protocol 9 is v0.7.0. An agent
+			 * older than protocol reporting gets upgrade advice instead of a
+			 * version number it cannot verify. */
+			if (status.protocol_version &&
+					status.protocol_version !== INTERFACE_PROTOCOL)
+				this.card.appendChild(E('div', { class: 'alert-message warning' },
+					_('The running agent speaks protocol v%d but this interface expects v%d. Upgrade luci-app-ac-agent and ac-agent together.')
+						.format(status.protocol_version, INTERFACE_PROTOCOL)));
+
+			this.card.appendChild(valueRow(_('Matching controller'),
+				status.protocol_version
+					? _('Requires an AC controller of v0.7.0 or newer (protocol version %d). Upgrade the controller and the agent together; a mismatched controller rejects the heartbeat or cannot parse it.')
+						.format(status.protocol_version)
+					: _('The running agent does not report a protocol version. Upgrade ac-agent and the AC controller together (protocol version 9).')));
 
 			/* Shown whenever the last exchange failed for a reason the badge does
 			 * not already spell out (for instance a changed controller key). */
@@ -409,20 +438,23 @@ return view.extend({
 					_('Last error: %s').format(status.last_hello_error)));
 		}
 
-		/* cbi-page-actions in the stock themes carries negative margins meant
-		 * for full-width page footers; inside this card they push the buttons
-		 * past the panel edge. The inline styles pin the row back inside. */
+		/* A bare flex row instead of cbi-page-actions. The stock themes give
+		 * that class negative margins meant for full-width page footers, and
+		 * argon pushes the buttons past the card edge even when the margins
+		 * are corrected inline. Owning the geometry keeps the row inside the
+		 * card in every theme, and flex-wrap lets the two buttons stack on a
+		 * narrow screen instead of clipping. */
 		this.card.appendChild(E('div', {
-			class: 'cbi-page-actions',
-			style: 'margin:14px 0 0;padding:0;border-top:0;text-align:right'
+			style: 'display:flex;justify-content:flex-end;align-items:center;' +
+				'gap:8px;flex-wrap:wrap;margin:14px 0 0;padding:0'
 		}, [
 			E('button', {
 				class: 'btn cbi-button cbi-button-action',
 				click: ui.createHandlerFn(this, 'handleRestart')
 			}, _('Restart agent')),
-			' ',
 			E('button', {
-				class: 'btn cbi-button cbi-button-action',
+				class: 'btn cbi-button cbi-button-negative',
+				style: 'background:#c62828;border-color:#c62828;color:#fff',
 				click: ui.createHandlerFn(this, 'handleResetManagement')
 			}, _('Reset management'))
 		]));
@@ -447,7 +479,13 @@ return view.extend({
 	},
 
 	handleResetManagement: function() {
-		var submit = E('button', { class: 'btn cbi-button cbi-button-action', type: 'button' }, _('Reset management'));
+		/* The confirmation carries the same red as the trigger: a destructive
+		 * action must read as one before and after the click. */
+		var submit = E('button', {
+			class: 'btn cbi-button cbi-button-negative',
+			style: 'background:#c62828;border-color:#c62828;color:#fff',
+			type: 'button'
+		}, _('Reset management'));
 		var cancel = E('button', { class: 'btn cbi-button', type: 'button', click: ui.hideModal }, _('Cancel'));
 		submit.addEventListener('click', function() {
 			submit.disabled = cancel.disabled = true;

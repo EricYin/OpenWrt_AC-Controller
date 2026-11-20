@@ -39,7 +39,12 @@ const (
 // absent, because /var/run is world-readable by convention and a status screen
 // has no business knowing the credential.
 type Status struct {
-	Version   string `json:"version"`
+	Version string `json:"version"`
+	// Protocol is the wire protocol this agent binary speaks (proto.ProtocolVersion).
+	// The local UI surfaces it so an operator can tell at a glance whether the
+	// agent and the controller are built from matching releases; agents older
+	// than the field simply omit it and the UI falls back to upgrade advice.
+	Protocol  int    `json:"protocol_version"`
 	PID       int    `json:"pid"`
 	StartedAt string `json:"started_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -175,6 +180,7 @@ func (a *Agent) reflectStatus() {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	a.rt.Version = version.Version
+	a.rt.Protocol = proto.ProtocolVersion
 	a.rt.UpdatedAt = now
 	a.rt.MAC = a.Identity.MAC
 	a.rt.Model = a.Identity.Model

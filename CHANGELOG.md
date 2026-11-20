@@ -1,5 +1,21 @@
 # 修改记录 / Changelog
 
+## v0.7.5
+
+### 修复（AP 侧）
+
+- **状态卡显示 agent 版本与配套 AC 管理器要求**：原「agent」行只显示裸版本号，现改为「agent 版本」行，显示 `ac-agent <版本>`、二进制所讲的协议版本（status.json 新增 `protocol_version` 字段）与启动时间；新增「配套 AC 管理器」行，提示需要 v0.7.0 及以上的控制器（协议版本 9），且管理器与 agent 应一并升级。若 agent 上报的协议版本与本界面预期不一致，额外显示警告条。
+- **「重置纳管」改为红色按钮**：卡片触发按钮与二次确认弹窗中的提交按钮均使用 `cbi-button-negative` + 内联红色（#c62828），在所有主题下稳定呈红色，强调破坏性操作。
+- **按钮溢出修复（argon 兼容）**：v0.7.3 的内联负边距修正在 argon 主题下仍会溢出，现彻底弃用 `cbi-page-actions`，改用自带 flex 布局（右对齐、8px 间距、可换行）的容器，不依赖任何主题样式。
+- 软件包版本：`ac-agent 0.3.0-3`（状态文件新增协议版本字段）、`luci-app-ac-agent 1.0.0-8`。旧版 agent 不上报协议版本时，界面回退显示"请将 ac-agent 与 AC 管理器一并升级"。
+
+### English
+
+- The status card now shows the agent version with the wire protocol it speaks (`protocol_version` added to status.json) and a "Matching controller" row requiring controller v0.7.0+ (protocol version 9); a protocol mismatch between the running agent and the interface raises a warning banner.
+- "Reset management" is now a red button — both the card trigger and the confirmation submit (`cbi-button-negative` plus inline red so it stays red in every theme).
+- The action-row overflow under argon is fixed for good: the card no longer reuses `cbi-page-actions` (whose theme-specific negative margins caused the issue); it renders its own right-aligned, wrapping flex row instead.
+- Packages: `ac-agent 0.3.0-3`, `luci-app-ac-agent 1.0.0-8`. Agents older than protocol reporting fall back to combined-upgrade advice.
+
 ## v0.7.4
 
 ### 修复

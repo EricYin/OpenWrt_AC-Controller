@@ -112,8 +112,23 @@ msgstr "接入点"
 msgid "BSS reported"
 msgstr "上报 BSS 数"
 
-msgid "Agent"
-msgstr "agent"
+msgid "Agent version"
+msgstr "agent 版本"
+
+msgid "protocol v%d"
+msgstr "协议 v%d"
+
+msgid "Matching controller"
+msgstr "配套 AC 管理器"
+
+msgid "Requires an AC controller of v0.7.0 or newer (protocol version %d). Upgrade the controller and the agent together; a mismatched controller rejects the heartbeat or cannot parse it."
+msgstr "需要 v0.7.0 及以上的 AC 管理器（协议版本 %d）。请将管理器与 agent 一并升级；版本不配套时，心跳会被拒绝或无法解析。"
+
+msgid "The running agent does not report a protocol version. Upgrade ac-agent and the AC controller together (protocol version 9)."
+msgstr "运行中的 agent 未上报协议版本。请将 ac-agent 与 AC 管理器一并升级（协议版本 9）。"
+
+msgid "The running agent speaks protocol v%d but this interface expects v%d. Upgrade luci-app-ac-agent and ac-agent together."
+msgstr "运行中的 agent 使用协议 v%d，而本界面预期 v%d。请将 luci-app-ac-agent 与 ac-agent 一并升级。"
 
 msgid "since"
 msgstr "启动于"

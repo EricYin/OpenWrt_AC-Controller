@@ -113,7 +113,22 @@ msgstr ""
 msgid "BSS reported"
 msgstr ""
 
-msgid "Agent"
+msgid "Agent version"
+msgstr ""
+
+msgid "protocol v%d"
+msgstr ""
+
+msgid "Matching controller"
+msgstr ""
+
+msgid "Requires an AC controller of v0.7.0 or newer (protocol version %d). Upgrade the controller and the agent together; a mismatched controller rejects the heartbeat or cannot parse it."
+msgstr ""
+
+msgid "The running agent does not report a protocol version. Upgrade ac-agent and the AC controller together (protocol version 9)."
+msgstr ""
+
+msgid "The running agent speaks protocol v%d but this interface expects v%d. Upgrade luci-app-ac-agent and ac-agent together."
 msgstr ""
 
 msgid "since"
