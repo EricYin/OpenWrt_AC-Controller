@@ -151,6 +151,75 @@ func TestFirmwarePinEnrollment(t *testing.T) {
 	}
 }
 
+func TestDeleteDeviceRecoversReflashedAP(t *testing.T) {
+	t.Setenv("AC_SECRET", "")
+	ac := newACWithSecret(t, "")
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg, _, _ := newAgentConfig(t, ac)
+
+	a, err := agent.New(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ac.adopt(t, apMAC)
+	if err := a.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a.State().AppliedRev != 1 {
+		t.Fatal("first adoption did not apply revision 1")
+	}
+
+	// A full reflash: same MAC, but a fresh state directory, so a new
+	// enrollment key and a reset generation of zero.
+	reflashCfg, _, _ := newAgentConfig(t, ac)
+	b, err := agent.New(reflashCfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Step(ctx); err == nil || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("reflashed AP: %v, want the already-registered conflict", err)
+	}
+
+	// Releasing is not enough; deleting the record clears the binding.
+	resp := ac.post("/api/v1/devices/"+apMAC+"/release", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("release: HTTP %d", resp.StatusCode)
+	}
+	if err := b.Step(ctx); err == nil || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("release did not keep the conflict: %v", err)
+	}
+
+	resp = ac.delete("/api/v1/devices/" + apMAC)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete device: HTTP %d", resp.StatusCode)
+	}
+	resp = ac.delete("/api/v1/devices/" + apMAC)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("second delete: HTTP %d, want 404", resp.StatusCode)
+	}
+
+	if err := b.Step(ctx); err != nil {
+		t.Fatalf("re-enroll after delete: %v", err)
+	}
+	if d := ac.device(t, apMAC); d.State != store.StatePending {
+		t.Fatalf("state after re-enroll = %s, want pending", d.State)
+	}
+	ac.adopt(t, apMAC)
+	if err := b.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b.State().AppliedRev != 1 {
+		t.Fatal("readoption after delete did not apply revision 1")
+	}
+}
+
 func TestSwitchControllerAndReadopt(t *testing.T) {
 	t.Setenv("AC_SECRET", "")
 	oldAC := newACWithSecret(t, "")

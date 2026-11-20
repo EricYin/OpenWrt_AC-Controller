@@ -565,6 +565,11 @@ func (s *Store) RegisterEnrollment(ctx context.Context, d Device, public, id str
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return false, err
+	case previousKey == "":
+		// No stored enrollment binding: a MAC known only from discovery, or a
+		// row whose binding an operator deliberately cleared. Either way the
+		// incoming claim is the only identity on file, so accept it no matter
+		// what generation it carries.
 	case previousKey != public || generation < previousGeneration:
 		return false, nil
 	case generation == previousGeneration:
@@ -609,6 +614,44 @@ WHERE mac = ?`, d.MAC); err != nil {
 		}
 	}
 	return true, tx.Commit()
+}
+
+// deleteDeviceStatements removes every row keyed by a device MAC. packages are
+// kept whole for auditability, but a deleted device has no audit trail left to
+// serve, so they go too. client_meta is deliberately absent: it is intent about
+// stations, not about the AP, and follows the client, not the delete button.
+var deleteDeviceStatements = []string{
+	`DELETE FROM devices WHERE mac = ?`,
+	`DELETE FROM device_actions WHERE mac = ?`,
+	`DELETE FROM clients WHERE ap_mac = ?`,
+	`DELETE FROM client_samples WHERE ap_mac = ?`,
+	`DELETE FROM radio_samples WHERE ap_mac = ?`,
+	`DELETE FROM radio_state WHERE ap_mac = ?`,
+	`DELETE FROM port_state WHERE ap_mac = ?`,
+	`DELETE FROM bss_neighbors WHERE ap_mac = ?`,
+	`DELETE FROM packages WHERE mac = ?`,
+}
+
+// DeleteDevice removes a device and its dependent rows in one transaction.
+//
+// This is the recovery path for an AP that was re-initialised outside the
+// controller (reflash, board swap): the controller kept the old enrollment
+// binding, a re-initialised AP holds a fresh device key and its reset
+// generation restarted at zero, so enrollment is rejected with 409 forever.
+// Deleting the record lets the next enrollment register as a new identity,
+// pending adoption as usual.
+func (s *Store) DeleteDevice(ctx context.Context, mac string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range deleteDeviceStatements {
+		if _, err := tx.ExecContext(ctx, q, mac); err != nil {
+			return fmt.Errorf("delete device %s: %w", mac, err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) EnrollmentCredentials(ctx context.Context, mac string) (public, id string, err error) {

@@ -205,6 +205,7 @@ func (s *Server) Handler() http.Handler {
 	admin("PUT /api/v1/devices/{mac}/radios", s.handleSetDeviceRadios)
 	admin("PUT /api/v1/devices/{mac}/group", s.handleSetDeviceGroup)
 	admin("POST /api/v1/devices/{mac}/release", s.handleRelease)
+	admin("DELETE /api/v1/devices/{mac}", s.handleDeleteDevice)
 	admin("GET /api/v1/devices/{mac}/packages", s.handlePackages)
 	admin("GET /api/v1/features", s.handleFeatures)
 
@@ -712,6 +713,28 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+// handleDeleteDevice removes the device record entirely. Release keeps the
+// enrollment binding, so an AP that was re-initialised outside the controller
+// (reflash, board swap) can never re-enroll against it — enrollment rejects a
+// different device key with 409 and the operator has no way out. Deleting the
+// record clears the binding; the AP registers again as a new pending claim.
+func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
+	mac, ok := pathMAC(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.Store.GetDevice(r.Context(), mac); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := s.Store.DeleteDevice(r.Context(), mac); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.Store.LogEvent(r.Context(), "device_delete", mac, "device record deleted; the AP must re-enroll and be adopted again")
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": mac})
 }
 
 // handlePackage returns the exact bytes the AP should download. ?rev=N selects a

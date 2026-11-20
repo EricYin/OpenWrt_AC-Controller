@@ -2017,6 +2017,10 @@ async function act(action, mac, btn) {
     } else if (action === 'release') {
       await api('POST', base + '/release');
       say(mac + ' 已解绑，回到待采纳', 'ok');
+    } else if (action === 'delete_device') {
+      if (!confirm(mac + ' 删除该设备的全部记录？\n\n纳管绑定、客户端与遥测历史一并清除，此操作不可恢复。\nAP 会在下个周期以新身份重新登记为待采纳。')) return;
+      await api('DELETE', base);
+      say(mac + ' 已删除，等待 AP 重新登记', 'ok');
     } else if (action === 'download') {
       await downloadPackage(mac);
       say(mac + ' 配置包已下载', 'ok');
@@ -2057,6 +2061,7 @@ const DEV_ACTIONS = [
   ['reboot',        '重启 AP',  '整机重启，约 1 分钟内离线，期间无线全部中断', false],
   ['factory_reset', '恢复出厂',  '还原到被接管前的配置并解除采纳，当前 rev 失效，不可恢复', true],
   ['release',       '解绑',     '解除采纳回到待采纳状态，rev 与端口参数保留', true],
+  ['delete_device', '删除设备',  '删除该 MAC 的全部记录（含纳管绑定、客户端与遥测历史）。AP 整机重刷后报 409 无法重新纳管时用它恢复；AP 会在下个周期以新身份重新登记待采纳', true],
 ];
 const devActionsMask = $('dev-actions-mask');
 const devActionsCard = $('dev-actions');
@@ -6274,6 +6279,7 @@ const DIAG_KINDS = { network: '网络诊断', system: '系统日志', kernel: '�
 const EVENT_LABELS = {
   auth: '登录 / 账户',
   adopt: '采纳', repush: '重新下发', release: '释放', factory_reset: '恢复出厂', management_reset: '重置纳管',
+  device_delete: '删除设备',
   settings: '设置', template: '模板', group: '分组',
   group_create: '新建分组', group_update: '修改分组', group_delete: '删除分组', group_bind: '绑定分组',
   client_meta: '客户端备注', client_kick: '客户端踢除', firmware: '固件',

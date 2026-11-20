@@ -197,6 +197,21 @@ func (f *acFixture) post(path, body string) *http.Response {
 	return resp
 }
 
+// delete sends a management DELETE carrying the session cookie.
+func (f *acFixture) delete(path string) *http.Response {
+	f.t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, f.server.URL+path, nil)
+	if err != nil {
+		f.t.Fatalf("request: %v", err)
+	}
+	req.AddCookie(f.cookie)
+	resp, err := f.server.Client().Do(req)
+	if err != nil {
+		f.t.Fatalf("delete %s: %v", path, err)
+	}
+	return resp
+}
+
 // ensureDevice stands in for AP discovery so adopt has something to act on.
 func (f *acFixture) ensureDevice(t *testing.T, mac string) {
 	t.Helper()
