@@ -100,8 +100,16 @@ echo "::endgroup::"
 
 echo "::group::Collect packages"
 mkdir -p bin /artifacts
-# luci.mk also emits luci-i18n-ac-agent-zh-cn; all our assets contain "ac-".
-find bin -type f \( -name '*.ipk' -o -name '*.apk' \) -name '*ac-*' \
+# An explicit whitelist, not a "*ac-*" glob: the SDK tree also builds luac-*
+# (a dependency pulled in by the LuCI feed), and "luac-" matches the glob —
+# v0.7.5's Release shipped luac-5.1.5-r11.apk because of it. Name the four
+# packages this repo actually produces instead; luci.mk also emits
+# luci-i18n-ac-agent-zh-cn, covered by the luci-i18n-ac-agent prefix.
+find bin -type f \( -name '*.ipk' -o -name '*.apk' \) \( \
+    -name 'ac-agent-*' -o \
+    -name 'ac-controller-*' -o \
+    -name 'luci-app-ac-agent-*' -o \
+    -name 'luci-i18n-ac-agent-*' \) \
     -exec cp -f {} /artifacts/ \;
 count=$(find /artifacts -maxdepth 1 -type f \( -name '*.ipk' -o -name '*.apk' \) | wc -l)
 if [ "$count" -eq 0 ]; then
