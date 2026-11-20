@@ -82,6 +82,7 @@ mkdir -p data && chown 1000:1000 data
 services:
   ac:
     image: naoki66/openwrt_ac-controller:latest
+    pull_policy: always
     container_name: ac-controller
     restart: unless-stopped
     init: true
@@ -165,7 +166,7 @@ compose 只列出 4 个常用部署项。下表是**全部**可用变量与内�
 docker compose pull && docker compose up -d
 ```
 
-`latest` 是滚动标签；想钉版本可用 `naoki66/openwrt_ac-controller:v0.5.1` 这类发布标签，或用 `sha-<短commit>` 标签回溯到具体构建。
+`latest` 是滚动标签，main 分支每次推送由 CI 更新；compose 里带 `pull_policy: always`，所以单跑 `docker compose up -d` 也会先拉取最新镜像，不必记两条命令（容器重启不拉取，断网时已有镜像照常运行）。想钉版本可用 `naoki66/openwrt_ac-controller:v0.5.1` 这类发布标签，或用 `sha-<短commit>` 标签回溯到具体构建。
 
 ## 8. 在 AP 上安装 agent
 

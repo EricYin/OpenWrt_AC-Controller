@@ -3,9 +3,13 @@
 # 只保留部署必需项；其余变量用内置默认值，NTP / 共享密钥可在「系统配置」页修改。
 # network_mode: host 为必需：AP 发现是 UDP 广播，bridge 网络收不到。
 # 升级：docker compose pull && docker compose up -d
+# 镜像跟随 latest（main 分支 CI 每次推送都会更新它）；pull_policy: always 让
+# 直接 `docker compose up -d` 也先拉取，不必记两条命令。容器重启不会触发拉取，
+# 所以断网时已有镜像照常运行。
 services:
   ac:
     image: naoki66/openwrt_ac-controller:latest
+    pull_policy: always
     container_name: ac-controller
     restart: unless-stopped
     init: true
