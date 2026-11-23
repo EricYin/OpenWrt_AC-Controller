@@ -226,6 +226,7 @@ func TestHelloRecordsApplyReport(t *testing.T) {
 	f.hello("", proto.Hello{
 		MAC:         testMAC,
 		AppliedRev:  2,
+		AppliedSHA:  "sha-of-the-applied-package",
 		SyncState:   proto.SyncRollback,
 		Steering:    "nrsyncd",
 		SyncMessage: "bss ac_ssid_corp_5g did not come up",
@@ -237,6 +238,9 @@ func TestHelloRecordsApplyReport(t *testing.T) {
 	}
 	if d.AppliedRev != 2 {
 		t.Errorf("applied_rev = %d, want 2", d.AppliedRev)
+	}
+	if d.AppliedSHA != "sha-of-the-applied-package" {
+		t.Errorf("applied_sha = %q, want the reported digest", d.AppliedSHA)
 	}
 	if d.SyncState != proto.SyncRollback {
 		t.Errorf("sync_state = %q", d.SyncState)

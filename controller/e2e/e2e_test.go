@@ -328,6 +328,11 @@ func TestAgentAppliesRevisionEndToEnd(t *testing.T) {
 	if d.AppliedRev != 1 {
 		t.Errorf("controller applied_rev = %d, want 1", d.AppliedRev)
 	}
+	// The digest the controller generated and the one the AP applied must agree:
+	// rev 1 alone does not prove the AP runs the bytes the controller built.
+	if d.ConfigSHA == "" || d.AppliedSHA != d.ConfigSHA {
+		t.Errorf("controller fingerprints: target=%q applied=%q, want equal and non-empty", d.ConfigSHA, d.AppliedSHA)
+	}
 	if d.SyncState != "applied" {
 		t.Errorf("controller sync_state = %q, want applied", d.SyncState)
 	}

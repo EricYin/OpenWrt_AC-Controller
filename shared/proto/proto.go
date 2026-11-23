@@ -89,6 +89,13 @@ type Hello struct {
 	Hostname     string `json:"hostname"`
 	AgentVersion string `json:"agent_version,omitempty"`
 	AppliedRev   int    `json:"applied_rev"`
+	// AppliedSHA is the SHA-256 of the package blob this AP actually applied,
+	// as the agent recorded it. The controller compares it with the digest it
+	// generated for config_rev: the same rev with a different digest means the
+	// AP is running different bytes, which the revision number alone cannot
+	// show (a local rebuild, a rollback to an older blob, or a corrupted
+	// download). Older agents omit it; an empty value means "not reported".
+	AppliedSHA string `json:"applied_sha,omitempty"`
 	// SyncState reports the outcome of the last apply attempt.
 	SyncState   string `json:"sync_state"`
 	SyncMessage string `json:"sync_message,omitempty"`

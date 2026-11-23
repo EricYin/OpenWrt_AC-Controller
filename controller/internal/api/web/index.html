@@ -3234,6 +3234,28 @@ function configStatus(dev) {
   };
 }
 
+// 配置指纹：rev 相同不代表字节相同——本地重打包、回滚到旧包或下载损坏都
+// 可能保留同一个 rev，所以再比一次 sha256。两个值都在时直接给结论，只显示
+// 前 8 位，完整摘要放 tooltip，避免把状态列撑宽。
+function fingerprint(dev) {
+  const target = (dev.config_sha || '').slice(0, 8);
+  const applied = (dev.applied_sha || '').slice(0, 8);
+  if (!target && !applied) return null;
+  const full = '目标包 sha256 ' + (dev.config_sha || '未知')
+    + '\nAP 已应用 sha256 ' + (dev.applied_sha || '未上报');
+  if (target && applied && target !== applied) {
+    return {
+      text: '指纹不一致 ' + applied + ' → ' + target,
+      title: full + '\n同一 rev 的内容不同，建议重新下发。'
+    };
+  }
+  if (target && applied)
+    return { text: '指纹 ' + applied + ' · 内容一致', title: full };
+  if (applied)
+    return { text: '指纹 ' + applied, title: full };
+  return { text: '目标指纹 ' + target, title: full + '\nAP 尚未上报已应用的指纹。' };
+}
+
 function renderDevices(list) {
   $('total').textContent = list.length;
   $('ap-online').textContent = list.filter(x => x.online).length;
@@ -3323,6 +3345,8 @@ function renderDevices(list) {
       cfg.push('已应用 rev ' + dev.applied_rev
         + (dev.sync_at ? ' · ' + ago(dev.sync_at) : ''));
     }
+    const fp = fingerprint(dev);
+    if (fp) cfg.push(fp);
     // 采纳状态不显示模板时，操作员无法看出这台机器跑的是哪套配置，
     // 解绑重采纳时就容易选错（曾因此拿占位 default 模板去采纳真机）。
     if (dev.template_id) cfg.push('模板 ' + dev.template_id);
@@ -3338,7 +3362,8 @@ function renderDevices(list) {
       for (const item of cfg) {
         const s = document.createElement('span');
         s.className = 'st-meta';
-        s.textContent = item;
+        s.textContent = typeof item === 'string' ? item : item.text;
+        if (item && item.title) s.title = item.title;
         row2.appendChild(s);
       }
       stack.appendChild(row2);

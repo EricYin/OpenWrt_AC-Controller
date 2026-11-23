@@ -1306,6 +1306,7 @@ func (a *Agent) buildHello(ctx context.Context) proto.Hello {
 		Hostname:      a.Identity.Hostname,
 		AgentVersion:  version.Version,
 		AppliedRev:    a.state.AppliedRev,
+		AppliedSHA:    a.state.SHA256,
 		SyncState:     a.state.PendingSync,
 		SyncMessage:   a.state.PendingSyncMsg,
 		Drift:         drift,

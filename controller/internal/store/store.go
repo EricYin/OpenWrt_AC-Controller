@@ -39,6 +39,13 @@ type Device struct {
 	EnrollmentID string `json:"-"`
 	// AppliedRev is the newest revision the AP reported as applied.
 	AppliedRev int `json:"applied_rev"`
+	// ConfigSHA is the SHA-256 of the package generated for ConfigRev, and
+	// AppliedSHA is the digest the AP reported for AppliedRev. Revision numbers
+	// say which package should be running; the digests say whether the bytes
+	// actually match. Empty means "unknown" for both (a legacy row, a package
+	// trimmed from history, or an agent that predates the report).
+	ConfigSHA  string `json:"config_sha,omitempty"`
+	AppliedSHA string `json:"applied_sha,omitempty"`
 	// SyncState is the AP's own verdict on its last apply: idle/applied/
 	// rollback/failed. Empty means the AP has never reported.
 	SyncState   string `json:"sync_state"`
@@ -204,7 +211,9 @@ CREATE TABLE IF NOT EXISTS devices (
 	reset_generation INTEGER NOT NULL DEFAULT 0,
 	template_id TEXT NOT NULL DEFAULT '',
 	config_rev INTEGER NOT NULL DEFAULT 0,
+	config_sha TEXT NOT NULL DEFAULT '',
 	applied_rev INTEGER NOT NULL DEFAULT 0,
+	applied_sha TEXT NOT NULL DEFAULT '',
 	sync_state TEXT NOT NULL DEFAULT '',
 	sync_message TEXT NOT NULL DEFAULT '',
 	sync_at INTEGER NOT NULL DEFAULT 0,
@@ -466,7 +475,9 @@ CREATE TABLE IF NOT EXISTS settings (
 		{"reset_generation", `ALTER TABLE devices ADD COLUMN reset_generation INTEGER NOT NULL DEFAULT 0`},
 		{"agent_version", `ALTER TABLE devices ADD COLUMN agent_version TEXT NOT NULL DEFAULT ''`},
 		{"config_rev", `ALTER TABLE devices ADD COLUMN config_rev INTEGER NOT NULL DEFAULT 0`},
+		{"config_sha", `ALTER TABLE devices ADD COLUMN config_sha TEXT NOT NULL DEFAULT ''`},
 		{"applied_rev", `ALTER TABLE devices ADD COLUMN applied_rev INTEGER NOT NULL DEFAULT 0`},
+		{"applied_sha", `ALTER TABLE devices ADD COLUMN applied_sha TEXT NOT NULL DEFAULT ''`},
 		{"sync_state", `ALTER TABLE devices ADD COLUMN sync_state TEXT NOT NULL DEFAULT ''`},
 		{"sync_message", `ALTER TABLE devices ADD COLUMN sync_message TEXT NOT NULL DEFAULT ''`},
 		{"sync_at", `ALTER TABLE devices ADD COLUMN sync_at INTEGER NOT NULL DEFAULT 0`},
@@ -666,7 +677,7 @@ ON CONFLICT(mac) DO UPDATE SET
 WHERE mac = ? AND state = 'pending'`, now, d.MAC); err != nil {
 			return false, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE devices SET applied_rev = 0, sync_state = '', sync_message = '', sync_at = 0,
+		if _, err := tx.ExecContext(ctx, `UPDATE devices SET applied_rev = 0, applied_sha = '', sync_state = '', sync_message = '', sync_at = 0,
 drift = 0, drift_files = '', fw_target = '', fw_state = '', fw_message = '', fw_at = 0
 WHERE mac = ?`, d.MAC); err != nil {
 			return false, err
@@ -737,12 +748,12 @@ WHERE mac = ? AND enrollment_id = ? AND state = 'adopted'`, SettingManagementKey
 }
 
 // deviceColumns keeps SELECT lists and Scan order in one place.
-const deviceColumns = `mac, model, firmware, agent_version, ip, hostname, state, template_id, config_rev, enrollment_id, applied_rev, sync_state, sync_message, sync_at, steering, last_seen, created_at, network_params, radio_overrides, fw_target, fw_state, fw_message, fw_at, uptime, reboot_period_days, reboot_at, reboot_next_at, reboot_weekday, reboot_monthday, led_on_at, led_off_at, led_on_next_at, led_off_next_at, led_state, led_state_at, led_retry_count, led_retry_at, group_id, wifi_caps, steer_stats, drift, drift_files`
+const deviceColumns = `mac, model, firmware, agent_version, ip, hostname, state, template_id, config_rev, config_sha, enrollment_id, applied_rev, applied_sha, sync_state, sync_message, sync_at, steering, last_seen, created_at, network_params, radio_overrides, fw_target, fw_state, fw_message, fw_at, uptime, reboot_period_days, reboot_at, reboot_next_at, reboot_weekday, reboot_monthday, led_on_at, led_off_at, led_on_next_at, led_off_next_at, led_state, led_state_at, led_retry_count, led_retry_at, group_id, wifi_caps, steer_stats, drift, drift_files`
 
 func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 	var d Device
 	err := row.Scan(&d.MAC, &d.Model, &d.Firmware, &d.AgentVersion, &d.IP, &d.Hostname,
-		&d.State, &d.TemplateID, &d.ConfigRev, &d.EnrollmentID, &d.AppliedRev,
+		&d.State, &d.TemplateID, &d.ConfigRev, &d.ConfigSHA, &d.EnrollmentID, &d.AppliedRev, &d.AppliedSHA,
 		&d.SyncState, &d.SyncMessage, &d.SyncAt, &d.Steering, &d.LastSeen, &d.CreatedAt,
 		&d.NetworkParams, &d.RadioOverrides, &d.FwTarget, &d.FWState, &d.FWMessage, &d.FWAt, &d.Uptime,
 		&d.RebootPeriodDays, &d.RebootAt, &d.RebootNextAt, &d.RebootWeekday, &d.RebootMonthday,
@@ -838,10 +849,11 @@ func (s *Store) SetConfigRev(ctx context.Context, mac string, rev int) error {
 // lower revision after a controller restore must be shown on that revision,
 // otherwise its sync card claims a version it no longer runs. The sync fields
 // only move when the AP actually reports an outcome.
-func (s *Store) RecordHello(ctx context.Context, mac string, appliedRev int, uptime int64, steering, syncState, syncMessage string, drift bool, driftFiles string) error {
+func (s *Store) RecordHello(ctx context.Context, mac string, appliedRev int, appliedSHA string, uptime int64, steering, syncState, syncMessage string, drift bool, driftFiles string) error {
 	const q = `
 UPDATE devices SET
 	applied_rev  = ?,
+	applied_sha  = CASE WHEN ? THEN ? ELSE applied_sha END,
 	uptime       = CASE WHEN ? > 0 THEN ? ELSE uptime END,
 	steering     = CASE WHEN ? <> '' THEN ? ELSE steering END,
 	sync_state   = CASE WHEN ? <> '' THEN ? ELSE sync_state END,
@@ -851,8 +863,12 @@ UPDATE devices SET
 	drift_files  = ?
 WHERE mac = ?`
 	reported := syncState
+	// A reported digest always wins. rev 0 means "nothing applied", so any
+	// older digest is cleared rather than left paired with an empty revision.
+	reportedSHA := appliedSHA != "" || appliedRev == 0
 	res, err := s.db.ExecContext(ctx, q,
 		appliedRev,
+		reportedSHA, appliedSHA,
 		uptime, uptime,
 		steering, steering,
 		reported, syncState,

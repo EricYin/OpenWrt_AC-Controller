@@ -139,6 +139,8 @@ function fmtRev(status) {
 	var parts = [ _('rev %d applied').format(status.applied_rev) ];
 	if (status.desired_rev !== status.applied_rev)
 		parts.push(_('rev %d pending').format(status.desired_rev));
+	if (status.sha256)
+		parts.push('sha ' + status.sha256.slice(0, 8));
 	if (status.applied_at)
 		parts.push(fmtTime(status.applied_at));
 	return parts.join(' · ');

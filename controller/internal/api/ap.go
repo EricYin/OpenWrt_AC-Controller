@@ -265,7 +265,7 @@ func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.Store.RecordHello(ctx, mac, hello.AppliedRev, hello.Uptime, hello.Steering, hello.SyncState, hello.SyncMessage, hello.Drift, strings.Join(hello.DriftFiles, ",")); err != nil {
+	if err := s.Store.RecordHello(ctx, mac, hello.AppliedRev, hello.AppliedSHA, hello.Uptime, hello.Steering, hello.SyncState, hello.SyncMessage, hello.Drift, strings.Join(hello.DriftFiles, ",")); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
