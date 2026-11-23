@@ -795,6 +795,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	)
 	// Publish before the first cycle so a local UI shows "starting" instead of
 	// mistaking a missing file for a dead agent.
+	a.ensureConfigBaseline()
 	a.writeStatus()
 
 	// Peer coordination is best effort: a port already in use must not stop
@@ -1297,6 +1298,7 @@ func (a *Agent) buildHello(ctx context.Context) proto.Hello {
 	// Clients first: the radio sample attributes stations to the radio they are
 	// on, and doing that from the same snapshot keeps the two consistent.
 	clients := a.collectClients(ctx)
+	drift, driftFiles := configDrift(a.Config.configDir(), a.state.ConfigHashes)
 	hello := proto.Hello{
 		MAC:           a.Identity.MAC,
 		Model:         a.Identity.Model,
@@ -1306,6 +1308,8 @@ func (a *Agent) buildHello(ctx context.Context) proto.Hello {
 		AppliedRev:    a.state.AppliedRev,
 		SyncState:     a.state.PendingSync,
 		SyncMessage:   a.state.PendingSyncMsg,
+		Drift:         drift,
+		DriftFiles:    driftFiles,
 		Steering:      a.steeringState(ctx),
 		Caps:          a.caps.Collect(ctx),
 		SteeringStats: a.steeringStats(),
@@ -1504,6 +1508,9 @@ func (a *Agent) applyRevision(ctx context.Context, reply proto.HelloReply) error
 		if !res.RollbackFailed {
 			a.state.PendingApply = ""
 			a.state.PendingApplyRestoreDHCP = false
+			// The files were restored; any baseline from the previous revision no
+			// longer describes them, so stop claiming to know the on-disk state.
+			a.state.ConfigHashes = nil
 		}
 		a.Log.Error("apply failed", "rev", manifest.Rev, "rollback_failed", res.RollbackFailed, "err", err)
 		a.state.LastError = err.Error()
@@ -1516,6 +1523,7 @@ func (a *Agent) applyRevision(ctx context.Context, reply proto.HelloReply) error
 	}
 
 	a.state.AppliedRev = manifest.Rev
+	a.state.ConfigHashes = res.Hashes
 	// An address move is committed only when the controller acknowledges it.
 	// Arm the watchdog before the immediate hello below: if that hello fails,
 	// the window keeps running and only a later successful hello clears it.
@@ -1532,6 +1540,7 @@ func (a *Agent) applyRevision(ctx context.Context, reply proto.HelloReply) error
 			PreviousRev:       before.AppliedRev,
 			PreviousSHA256:    before.SHA256,
 			PreviousAppliedAt: before.AppliedAt,
+			PreviousHashes:    before.ConfigHashes,
 			DeferredAux:       true,
 			Steering:          strings.TrimSpace(string(files[render.FileSteering])),
 			SteerPolicy:       strings.TrimSpace(string(files[render.FileSteerPolicy])),
@@ -1733,6 +1742,7 @@ func (a *Agent) checkPendingConfirm(ctx context.Context) error {
 	a.state.AppliedRev = pc.PreviousRev
 	a.state.SHA256 = pc.PreviousSHA256
 	a.state.AppliedAt = pc.PreviousAppliedAt
+	a.state.ConfigHashes = pc.PreviousHashes
 	a.nextApply = time.Now().Add(applyBackoff(1))
 	a.state.LastError = fmt.Sprintf("network revision %d was never confirmed; rolled back", pc.Rev)
 	a.state.PendingSync = proto.SyncRollback

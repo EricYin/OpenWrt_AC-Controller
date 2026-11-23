@@ -92,6 +92,11 @@ type Hello struct {
 	// SyncState reports the outcome of the last apply attempt.
 	SyncState   string `json:"sync_state"`
 	SyncMessage string `json:"sync_message,omitempty"`
+	// Drift reports that a file the controller wrote has since changed on disk
+	// (an operator edit, a package upgrade or a local script). Older agents omit
+	// both fields; an empty list means "nothing to report".
+	Drift      bool     `json:"drift,omitempty"`
+	DriftFiles []string `json:"drift_files,omitempty"`
 	// Steering is the client-steering daemon the AP finds enabled, as measured
 	// on the device (not what the controller asked for). Empty means unknown.
 	Steering string `json:"steering,omitempty"`

@@ -93,6 +93,10 @@ type ApplyResult struct {
 	// Empty means no address moved.
 	NewAddr        string
 	NetworkChanged bool
+	// Hashes records the digest of each file this apply left on disk, keyed by
+	// its UCI name. The agent persists them so a later local edit can be
+	// detected and reported instead of silently diverging.
+	Hashes map[string]string
 	// DHCPRestoreNeeded records that this apply turned DHCP/DNS off although it
 	// was running before. A watchdog revert must put it back, or the restored
 	// routed-mode config would come up without a DHCP server.
@@ -180,7 +184,14 @@ func (a *Applier) Apply(ctx context.Context, m bundle.Manifest, files map[string
 		pending[filepath.Join(a.ConfigDir, "network")] = mergedNetwork
 	}
 
-	res = ApplyResult{Rev: m.Rev, NetworkChanged: networkChanged}
+	res = ApplyResult{
+		Rev:            m.Rev,
+		NetworkChanged: networkChanged,
+		Hashes:         map[string]string{"wireless": hashConfig(mergedWireless)},
+	}
+	if len(network) > 0 {
+		res.Hashes["network"] = hashConfig(mergedNetwork)
+	}
 	for path := range pending {
 		res.Files = append(res.Files, filepath.Base(path))
 	}

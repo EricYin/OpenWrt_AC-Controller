@@ -83,7 +83,8 @@ func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(hello.Clients) > 4096 || len(hello.Neighbors) > 128 ||
-		len(hello.Radios) > 32 || len(hello.Ports) > 128 || len(hello.Actions) > 128 {
+		len(hello.Radios) > 32 || len(hello.Ports) > 128 || len(hello.Actions) > 128 ||
+		len(hello.DriftFiles) > 8 {
 		writeError(w, http.StatusBadRequest, errors.New("hello contains too many records"))
 		return
 	}
@@ -264,7 +265,7 @@ func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.Store.RecordHello(ctx, mac, hello.AppliedRev, hello.Uptime, hello.Steering, hello.SyncState, hello.SyncMessage); err != nil {
+	if err := s.Store.RecordHello(ctx, mac, hello.AppliedRev, hello.Uptime, hello.Steering, hello.SyncState, hello.SyncMessage, hello.Drift, strings.Join(hello.DriftFiles, ",")); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

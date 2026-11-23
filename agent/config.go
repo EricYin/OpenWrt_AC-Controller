@@ -380,7 +380,11 @@ type State struct {
 	AppliedRev           int    `json:"applied_rev"`
 	SHA256               string `json:"sha256,omitempty"`
 	AppliedAt            string `json:"applied_at,omitempty"`
-	LastError            string `json:"last_error,omitempty"`
+	// ConfigHashes is the digest of each UCI file written by the last successful
+	// apply. Comparing it with the files on disk is how the agent notices local
+	// edits (drift) without trusting any external state.
+	ConfigHashes map[string]string `json:"config_hashes,omitempty"`
+	LastError    string            `json:"last_error,omitempty"`
 	// PendingSync is a report that has not reached the controller yet. Keeping
 	// it on disk means a reboot does not swallow the outcome of an apply that
 	// already happened.
@@ -443,15 +447,16 @@ type PendingConfirm struct {
 	Deadline string `json:"deadline"`
 	// RestoreDHCP records that the apply switched DHCP off although it ran
 	// before, so the revert has to switch it back on.
-	RestoreDHCP       bool   `json:"restore_dhcp,omitempty"`
-	PreviousRev       int    `json:"previous_rev,omitempty"`
-	PreviousSHA256    string `json:"previous_sha256,omitempty"`
-	PreviousAppliedAt string `json:"previous_applied_at,omitempty"`
-	Confirmed         bool   `json:"confirmed,omitempty"`
-	DeferredAux       bool   `json:"deferred_aux,omitempty"`
-	Steering          string `json:"steering,omitempty"`
-	SteerPolicy       string `json:"steer_policy,omitempty"`
-	Neighbors         []byte `json:"neighbors,omitempty"`
+	RestoreDHCP       bool              `json:"restore_dhcp,omitempty"`
+	PreviousRev       int               `json:"previous_rev,omitempty"`
+	PreviousSHA256    string            `json:"previous_sha256,omitempty"`
+	PreviousAppliedAt string            `json:"previous_applied_at,omitempty"`
+	PreviousHashes    map[string]string `json:"previous_hashes,omitempty"`
+	Confirmed         bool              `json:"confirmed,omitempty"`
+	DeferredAux       bool              `json:"deferred_aux,omitempty"`
+	Steering          string            `json:"steering,omitempty"`
+	SteerPolicy       string            `json:"steer_policy,omitempty"`
+	Neighbors         []byte            `json:"neighbors,omitempty"`
 }
 
 // LoadState reads the state file. A missing file is not an error: it simply

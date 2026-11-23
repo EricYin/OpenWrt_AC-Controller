@@ -73,6 +73,10 @@ type Status struct {
 	DesiredRev int    `json:"desired_rev"`
 	SHA256     string `json:"sha256,omitempty"`
 	AppliedAt  string `json:"applied_at,omitempty"`
+	// Drift names files that changed after the last successful apply, so the
+	// local UI and the controller agree on the same verdict.
+	Drift      bool     `json:"drift,omitempty"`
+	DriftFiles []string `json:"drift_files,omitempty"`
 
 	LastHelloAt    string `json:"last_hello_at,omitempty"`
 	LastHelloOK    bool   `json:"last_hello_ok"`
@@ -212,6 +216,7 @@ func (a *Agent) reflectStatus() {
 	a.rt.AppliedRev = a.state.AppliedRev
 	a.rt.SHA256 = a.state.SHA256
 	a.rt.AppliedAt = a.state.AppliedAt
+	a.rt.Drift, a.rt.DriftFiles = configDrift(a.Config.configDir(), a.state.ConfigHashes)
 	a.rt.LastError = a.state.LastError
 	a.rt.FirmwareState = a.state.FirmwareState
 	a.rt.SteeringMode = steeringModeOrDefault(a.Config.SteeringMode)

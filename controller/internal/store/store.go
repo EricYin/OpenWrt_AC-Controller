@@ -44,6 +44,11 @@ type Device struct {
 	SyncState   string `json:"sync_state"`
 	SyncMessage string `json:"sync_message,omitempty"`
 	SyncAt      int64  `json:"sync_at"`
+	// Drift reports that a file the controller wrote no longer matches the AP's
+	// copy (a local edit or a package upgrade). DriftFiles names them, comma
+	// separated ("wireless", "network"); the badge and tooltip use it directly.
+	Drift      bool   `json:"drift"`
+	DriftFiles string `json:"drift_files,omitempty"`
 	// NetworkParams is the per-unit layer-2 override as JSON (model.DeviceNetwork):
 	// bridge ports, per-VLAN ports and management addresses. Empty means the unit
 	// takes the template as written. Stored as text rather than columns because it
@@ -225,6 +230,8 @@ CREATE TABLE IF NOT EXISTS devices (
 	led_retry_count INTEGER NOT NULL DEFAULT 0,
 	led_retry_at INTEGER NOT NULL DEFAULT 0,
 	group_id   TEXT NOT NULL DEFAULT '',
+	drift      INTEGER NOT NULL DEFAULT 0,
+	drift_files TEXT NOT NULL DEFAULT '',
 	last_seen  INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL DEFAULT 0
 );
@@ -486,6 +493,8 @@ CREATE TABLE IF NOT EXISTS settings (
 		{"led_retry_at", `ALTER TABLE devices ADD COLUMN led_retry_at INTEGER NOT NULL DEFAULT 0`},
 		{"group_id", `ALTER TABLE devices ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`},
 		{"radio_overrides", `ALTER TABLE devices ADD COLUMN radio_overrides TEXT NOT NULL DEFAULT ''`},
+		{"drift", `ALTER TABLE devices ADD COLUMN drift INTEGER NOT NULL DEFAULT 0`},
+		{"drift_files", `ALTER TABLE devices ADD COLUMN drift_files TEXT NOT NULL DEFAULT ''`},
 	} {
 		if err := s.addColumnIfMissing(ctx, "devices", col.name, col.ddl); err != nil {
 			return err
@@ -658,7 +667,7 @@ WHERE mac = ? AND state = 'pending'`, now, d.MAC); err != nil {
 			return false, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE devices SET applied_rev = 0, sync_state = '', sync_message = '', sync_at = 0,
-fw_target = '', fw_state = '', fw_message = '', fw_at = 0
+drift = 0, drift_files = '', fw_target = '', fw_state = '', fw_message = '', fw_at = 0
 WHERE mac = ?`, d.MAC); err != nil {
 			return false, err
 		}
@@ -728,7 +737,7 @@ WHERE mac = ? AND enrollment_id = ? AND state = 'adopted'`, SettingManagementKey
 }
 
 // deviceColumns keeps SELECT lists and Scan order in one place.
-const deviceColumns = `mac, model, firmware, agent_version, ip, hostname, state, template_id, config_rev, enrollment_id, applied_rev, sync_state, sync_message, sync_at, steering, last_seen, created_at, network_params, radio_overrides, fw_target, fw_state, fw_message, fw_at, uptime, reboot_period_days, reboot_at, reboot_next_at, reboot_weekday, reboot_monthday, led_on_at, led_off_at, led_on_next_at, led_off_next_at, led_state, led_state_at, led_retry_count, led_retry_at, group_id, wifi_caps, steer_stats`
+const deviceColumns = `mac, model, firmware, agent_version, ip, hostname, state, template_id, config_rev, enrollment_id, applied_rev, sync_state, sync_message, sync_at, steering, last_seen, created_at, network_params, radio_overrides, fw_target, fw_state, fw_message, fw_at, uptime, reboot_period_days, reboot_at, reboot_next_at, reboot_weekday, reboot_monthday, led_on_at, led_off_at, led_on_next_at, led_off_next_at, led_state, led_state_at, led_retry_count, led_retry_at, group_id, wifi_caps, steer_stats, drift, drift_files`
 
 func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 	var d Device
@@ -739,7 +748,7 @@ func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 		&d.RebootPeriodDays, &d.RebootAt, &d.RebootNextAt, &d.RebootWeekday, &d.RebootMonthday,
 		&d.LEDOnAt, &d.LEDOffAt, &d.LEDOnNextAt, &d.LEDOffNextAt,
 		&d.LEDState, &d.LEDStateAt, &d.LEDRetryCount, &d.LEDRetryAt,
-		&d.GroupID, &d.WifiCaps, &d.SteerStats)
+		&d.GroupID, &d.WifiCaps, &d.SteerStats, &d.Drift, &d.DriftFiles)
 	return d, err
 }
 
@@ -829,7 +838,7 @@ func (s *Store) SetConfigRev(ctx context.Context, mac string, rev int) error {
 // lower revision after a controller restore must be shown on that revision,
 // otherwise its sync card claims a version it no longer runs. The sync fields
 // only move when the AP actually reports an outcome.
-func (s *Store) RecordHello(ctx context.Context, mac string, appliedRev int, uptime int64, steering, syncState, syncMessage string) error {
+func (s *Store) RecordHello(ctx context.Context, mac string, appliedRev int, uptime int64, steering, syncState, syncMessage string, drift bool, driftFiles string) error {
 	const q = `
 UPDATE devices SET
 	applied_rev  = ?,
@@ -837,7 +846,9 @@ UPDATE devices SET
 	steering     = CASE WHEN ? <> '' THEN ? ELSE steering END,
 	sync_state   = CASE WHEN ? <> '' THEN ? ELSE sync_state END,
 	sync_message = CASE WHEN ? <> '' THEN ? ELSE sync_message END,
-	sync_at      = CASE WHEN ? <> '' THEN strftime('%s','now') ELSE sync_at END
+	sync_at      = CASE WHEN ? <> '' THEN strftime('%s','now') ELSE sync_at END,
+	drift        = ?,
+	drift_files  = ?
 WHERE mac = ?`
 	reported := syncState
 	res, err := s.db.ExecContext(ctx, q,
@@ -847,6 +858,7 @@ WHERE mac = ?`
 		reported, syncState,
 		reported, syncMessage,
 		reported,
+		drift, driftFiles,
 		mac)
 	if err != nil {
 		return fmt.Errorf("record hello %s: %w", mac, err)

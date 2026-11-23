@@ -3244,6 +3244,17 @@ function renderDevices(list) {
       b.title = '尚未采纳 · 当前' + (dev.online ? '在线' : '离线');
     }
     stRow1.appendChild(b);
+    // 漂移是本地文件与上次下发的差异，只在 AP 在线时展示：离线设备的
+    // 文件无法重新读取，显示旧结论会误导操作员。
+    if (dev.drift && dev.online) {
+      const d = document.createElement('span');
+      d.className = 'badge pending';
+      d.textContent = '配置漂移';
+      const names = (dev.drift_files || '').split(',').filter(Boolean).join('、');
+      d.title = '本地配置已被修改' + (names ? '：' + names : '')
+        + '。用「操作 → 重新下发」可覆盖本地修改。';
+      stRow1.appendChild(d);
+    }
     stack.appendChild(stRow1);
 
     // 第二行：配置归属。每个条目是一个整词 span，换行时整体下移不切断。
