@@ -200,6 +200,15 @@ func Wireless(t model.Template, opts Options) ([]byte, error) {
 		if iface.src.ProxyARP {
 			option(&b, "proxy_arp", "1")
 		}
+		if iface.src.TimeAdvertisement > 0 {
+			option(&b, "time_advertisement", strconv.Itoa(iface.src.TimeAdvertisement))
+		}
+		if iface.src.TimeZone != "" {
+			option(&b, "time_zone", iface.src.TimeZone)
+		}
+		if iface.src.MBO {
+			option(&b, "mbo", "1")
+		}
 		if iface.src.Isolate {
 			option(&b, "isolate", "1")
 		}

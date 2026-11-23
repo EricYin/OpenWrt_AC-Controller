@@ -5846,8 +5846,9 @@ function renderWLEditor() {
   toggles.style.marginTop = '12px';
   host.appendChild(toggles);
 
-  const addToggle = (box, text, checked, onChange) => {
+  const addToggle = (box, text, checked, onChange, title) => {
     const label = document.createElement('label');
+    if (title) label.title = title;
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !!checked;
@@ -5919,6 +5920,66 @@ function renderWLEditor() {
     setWLDirty(true);
   }
   mdLabel.style.display = ro.r ? '' : 'none';
+
+  // 802.11v 扩展：对应 LuCI「WLAN 漫游」页的时间广播/时区与 MBO 等开关。
+  // 这些是 hostapd 的 BSS 级参数，由模板下发、agent 重载 wifi 后生效。
+  const vExt = document.createElement('div');
+  vExt.className = 'wl-fields';
+  vExt.style.marginTop = '10px';
+  host.appendChild(vExt);
+
+  const taLabel = document.createElement('label');
+  taLabel.title = '在管理帧里广播时间信息：0 关闭；1 广播 TSF；2 同时广播 UTC';
+  taLabel.appendChild(document.createTextNode('时间广播'));
+  const taSel = document.createElement('select');
+  for (const [value, text] of [['0', '已禁用'], ['1', '广播 TSF'], ['2', '广播 TSF + UTC']]) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = text;
+    taSel.appendChild(opt);
+  }
+  taSel.value = String(s.time_advertisement || 0);
+  taSel.addEventListener('change', () => {
+    s.time_advertisement = parseInt(taSel.value, 10) || 0;
+    setWLDirty(true);
+  });
+  taLabel.appendChild(taSel);
+  vExt.appendChild(taLabel);
+
+  const tzLabel = document.createElement('label');
+  tzLabel.title = '随广播发送的本地时区，POSIX 写法，例如 CST-8';
+  tzLabel.appendChild(document.createTextNode('时区'));
+  const tzInput = document.createElement('input');
+  tzInput.value = s.time_zone || '';
+  tzInput.placeholder = 'CST-8';
+  tzInput.maxLength = 64;
+  tzInput.addEventListener('input', () => {
+    s.time_zone = tzInput.value.trim();
+    setWLDirty(true);
+  });
+  tzLabel.appendChild(tzInput);
+  vExt.appendChild(tzLabel);
+
+  const vBox = document.createElement('div');
+  vBox.className = 'wl-checks';
+  vBox.style.marginTop = '10px';
+  host.appendChild(vBox);
+  addToggle(vBox, 'WNM 睡眠模式', s.wnm_sleep_mode, v => {
+    s.wnm_sleep_mode = v;
+    setWLDirty(true);
+  }, '允许客户端用 WNM 休眠管理帧进入扩展睡眠');
+  addToggle(vBox, 'WNM 睡眠模式修复', s.wnm_sleep_mode_no_keys, v => {
+    s.wnm_sleep_mode_no_keys = v;
+    setWLDirty(true);
+  }, '未加密的 WNM 休眠帧也接受，兼容老客户端');
+  addToggle(vBox, '代理 ARP', s.proxy_arp, v => {
+    s.proxy_arp = v;
+    setWLDirty(true);
+  }, '由 AP 代答 ARP，让休眠中的客户端不必醒来');
+  addToggle(vBox, 'MBO 多频优选', s.mbo, v => {
+    s.mbo = v;
+    setWLDirty(true);
+  }, '向支持 MBO/OCE 的手机提供频段与 AP 偏好，通常与 802.11v 一起开');
 
   // 定时开关只是计划：AP 侧 wifi_schedule 已被禁用，
   // 所以这里保存意图并在列表里标记，不做任何执行承诺。

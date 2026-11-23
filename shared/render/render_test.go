@@ -319,6 +319,41 @@ func TestRRMKeys(t *testing.T) {
 	}
 }
 
+// 802.11v extras borrowed from LuCI's roaming tab: time advertisement, its
+// time zone, and MBO/OCE.
+func TestTimeAdvertisementAndMBO(t *testing.T) {
+	tpl := sampleTemplate()
+	tpl.SSIDs[0].TimeAdvertisement = 2
+	tpl.SSIDs[0].TimeZone = "CST-8"
+	tpl.SSIDs[0].MBO = true
+	out, err := Wireless(tpl, Options{Prefix: ACPrefix})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		"option time_advertisement '2'",
+		"option time_zone 'CST-8'",
+		"option mbo '1'",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("missing %q\n%s", want, out)
+		}
+	}
+}
+
+func TestInvalidTimeAdvertisementRejected(t *testing.T) {
+	tpl := sampleTemplate()
+	tpl.SSIDs[0].TimeAdvertisement = 3
+	if _, err := Wireless(tpl, Options{Prefix: ACPrefix}); err == nil {
+		t.Fatal("time_advertisement=3 should be rejected")
+	}
+	tpl.SSIDs[0].TimeAdvertisement = 0
+	tpl.SSIDs[0].TimeZone = "CST -8"
+	if _, err := Wireless(tpl, Options{Prefix: ACPrefix}); err == nil {
+		t.Fatal("time_zone with whitespace should be rejected")
+	}
+}
+
 func TestSteeringFile(t *testing.T) {
 	tpl := sampleTemplate()
 	if got := Steering(tpl); got != nil {

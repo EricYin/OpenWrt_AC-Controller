@@ -181,6 +181,17 @@ type SSID struct {
 	WNMSleepMode       bool  `json:"wnm_sleep_mode,omitempty"`
 	WNMSleepModeNoKeys bool  `json:"wnm_sleep_mode_no_keys,omitempty"`
 	ProxyARP           bool  `json:"proxy_arp,omitempty"`
+	// TimeAdvertisement mirrors LuCI's 802.11v "时间广播": 0 disabled, 1 send
+	// the TSF timer in management frames, 2 additionally send UTC.
+	TimeAdvertisement int `json:"time_advertisement,omitempty"`
+	// TimeZone is the POSIX TZ string advertised with the time information,
+	// e.g. "CST-8". Stored even when advertisement is off so an operator can
+	// prepare it before switching the feature on.
+	TimeZone string `json:"time_zone,omitempty"`
+	// MBO enables Multiband Operation (Wi-Fi Alliance OCE), which lets
+	// 11v-capable phones act on the AP's band/AP preference. The BTM half only
+	// works together with bss_transition.
+	MBO bool `json:"mbo,omitempty"`
 	// FTPSKGenerateLocal is tri-state: nil leaves it out of the rendered file so
 	// the hostapd default applies.
 	FTPSKGenerateLocal *bool `json:"ft_psk_generate_local,omitempty"`
@@ -500,6 +511,14 @@ func (t Template) Validate() error {
 		}
 		if s.MaxSTA < 0 || s.MaxSTA > 512 {
 			errs = append(errs, fmt.Errorf("%s %q: maxsta %d outside 0-512", where, s.SSID, s.MaxSTA))
+		}
+		if s.TimeAdvertisement < 0 || s.TimeAdvertisement > 2 {
+			errs = append(errs, fmt.Errorf("%s %q: time_advertisement %d outside 0-2", where, s.SSID, s.TimeAdvertisement))
+		}
+		// hostapd accepts a POSIX TZ string. Reject whitespace and quotes so a
+		// value cannot break out of the UCI quoting in the rendered file.
+		if s.TimeZone != "" && (len(s.TimeZone) > 64 || strings.ContainsAny(s.TimeZone, " \t\r\n'")) {
+			errs = append(errs, fmt.Errorf("%s %q: time_zone must be a POSIX TZ string without whitespace or quotes", where, s.SSID))
 		}
 		switch s.MACFilter {
 		case "", MACFilterAllow, MACFilterDeny:
