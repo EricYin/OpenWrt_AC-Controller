@@ -111,14 +111,37 @@ function fmtTime(iso) {
 	return isNaN(t) ? iso : new Date(t).toLocaleString();
 }
 
+/* One verdict, same vocabulary as the controller's device list. "rev 5" alone
+ * does not answer the question an operator actually has — is this AP running
+ * what the controller issued — and a matching rev still says nothing about a
+ * local edit. Drift wins over the rev comparison because it is the stronger
+ * finding: the files no longer match what was applied. */
+function configVerdict(status) {
+	if (!status)
+		return { label: _('nothing applied yet'), color: '#546e7a' };
+	if (status.drift)
+		return { label: _('local drift'), color: '#ef6c00' };
+	if (status.desired_rev !== status.applied_rev)
+		return { label: _('awaiting push'), color: '#3b82f6' };
+	if (status.last_error)
+		return { label: _('last apply failed'), color: '#c62828' };
+	if (!status.applied_rev)
+		return { label: _('nothing applied yet'), color: '#546e7a' };
+	return { label: _('in sync'), color: '#2e7d32' };
+}
+
 function fmtRev(status) {
 	if (!status)
 		return '-';
 	if (!status.applied_rev && !status.desired_rev)
 		return _('nothing applied yet');
+
+	var parts = [ _('rev %d applied').format(status.applied_rev) ];
 	if (status.desired_rev !== status.applied_rev)
-		return _('rev %d applied, rev %d pending').format(status.applied_rev, status.desired_rev);
-	return _('rev %d').format(status.applied_rev);
+		parts.push(_('rev %d pending').format(status.desired_rev));
+	if (status.applied_at)
+		parts.push(fmtTime(status.applied_at));
+	return parts.join(' · ');
 }
 
 /* One sentence explaining the badge and, when it is bad, the most likely cause.
@@ -382,7 +405,24 @@ return view.extend({
 			this.card.appendChild(valueRow(_('Controller'), controller));
 
 			this.card.appendChild(valueRow(_('Controller ID'), status.ac_id || '-'));
-			this.card.appendChild(valueRow(_('Configuration'), fmtRev(status)));
+
+			var verdict = configVerdict(status);
+			this.card.appendChild(valueRow(_('Configuration'), [
+				badge(verdict.label, verdict.color),
+				E('div', { style: 'margin-top:6px' }, fmtRev(status))
+			]));
+
+			/* Drift and the last apply error used to live only in the
+			 * controller's view or in a log file. Naming the changed files here
+			 * lets an operator decide whether to re-push without SSHing in. */
+			if (status.drift)
+				this.card.appendChild(valueRow(_('Configuration drift'),
+					(status.drift_files && status.drift_files.length)
+						? _('changed on the AP: %s').format(status.drift_files.join(', '))
+						: _('files written by the controller no longer match the local copy')));
+
+			if (status.last_error)
+				this.card.appendChild(valueRow(_('Last error'), status.last_error));
 
 			this.card.appendChild(valueRow(_('Last heartbeat'),
 				status.last_hello_at

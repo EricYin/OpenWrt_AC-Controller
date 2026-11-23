@@ -91,11 +91,35 @@ msgstr "配置版本"
 msgid "nothing applied yet"
 msgstr "尚未下发"
 
-msgid "rev %d applied, rev %d pending"
-msgstr "已生效 rev %d，待应用 rev %d"
+msgid "local drift"
+msgstr "本地漂移"
 
-msgid "rev %d"
-msgstr "rev %d"
+msgid "awaiting push"
+msgstr "待下发"
+
+msgid "last apply failed"
+msgstr "应用失败"
+
+msgid "in sync"
+msgstr "已同步"
+
+msgid "rev %d applied"
+msgstr "已应用 rev %d"
+
+msgid "rev %d pending"
+msgstr "待应用 rev %d"
+
+msgid "Configuration drift"
+msgstr "配置漂移"
+
+msgid "changed on the AP: %s"
+msgstr "AP 上被改动的文件：%s"
+
+msgid "files written by the controller no longer match the local copy"
+msgstr "控制器写入的文件与 AP 本地副本已不一致"
+
+msgid "Last error"
+msgstr "最近错误"
 
 msgid "Last heartbeat"
 msgstr "最近心跳"

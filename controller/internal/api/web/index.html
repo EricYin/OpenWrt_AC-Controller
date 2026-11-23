@@ -74,6 +74,8 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
   .badge.failed { color: #f2a0a0; border-color: #5a1f1f; background: #2a1010; }
   /* Silence is not an error: an AP that is simply unplugged is grey, not red. */
   .badge.offline { color: #8d99a6; border-color: #2f3742; background: #1a1f26; }
+  /* 已生成、等 AP 下次心跳应用：是进行中，不是故障，用信息色而非警告色 */
+  .badge.sync { color: #9dc1ff; border-color: #1e4a86; background: #10203a; }
   .rev { color: var(--muted); font-size: 12px; margin-left: 6px; }
   .empty { padding: 32px; text-align: center; color: var(--muted); }
   .hint { color: var(--muted); font-size: 12.5px; margin-top: 14px; line-height: 1.8; }
@@ -3176,6 +3178,62 @@ function addrCell(tr, dev) {
   return td;
 }
 
+// 配置状态：把 rev、漂移和应用结果合成一个操作员能直接读的结论。
+// 裸的「rev 5/5」只是数字，操作员真正要问的是「这台 AP 的配置和控制器
+// 一致吗」，而且数字相同时也可能本地文件已被改动。返回的 key 写到状态列
+// 的 data-cfg 上，底部筛选条据此过滤，不再从徽章样式反推语义。
+// 离线设备无法重新读取本地文件，所以不沿用最后一次结论，单独显示待确认。
+function configStatus(dev) {
+  if (dev.sync_state === 'failed') {
+    return {
+      key: 'failed', label: '应用失败', cls: 'failed',
+      title: 'AP 应用配置失败' + (dev.sync_message ? '：' + dev.sync_message : '')
+        + '。可查看 AP 的 /tmp/ac-agent.log 后重新下发。'
+    };
+  }
+  if (dev.sync_state === 'rollback') {
+    return {
+      key: 'rollback', label: '已回滚', cls: 'pending',
+      title: '新配置未通过验证，AP 已回滚到上一版'
+        + (dev.sync_message ? '：' + dev.sync_message : '')
+    };
+  }
+  if (!dev.online) {
+    return {
+      key: 'unknown', label: '待确认', cls: 'offline',
+      title: 'AP 离线，无法确认本地配置是否仍与上次下发一致'
+        + (dev.sync_at ? '；最后一次同步 ' + ago(dev.sync_at) : '')
+    };
+  }
+  if (dev.drift) {
+    const names = (dev.drift_files || '').split(',').filter(Boolean).join('、');
+    return {
+      key: 'drift', label: '本地漂移', cls: 'pending',
+      title: '控制器写入的配置在 AP 上被改动' + (names ? '：' + names : '')
+        + '。用「操作 → 重新下发」可覆盖本地修改。'
+    };
+  }
+  if (!dev.config_rev) {
+    if (dev.state !== 'adopted') return null;
+    return {
+      key: 'none', label: '未下发', cls: 'offline',
+      title: '已采纳，但还没有为这台 AP 生成过配置包'
+    };
+  }
+  if (dev.applied_rev < dev.config_rev) {
+    return {
+      key: 'pending', label: '待下发', cls: 'sync',
+      title: '控制器已生成 rev ' + dev.config_rev + '，AP 当前运行 rev '
+        + (dev.applied_rev || 0) + '，将在下次心跳时应用'
+    };
+  }
+  return {
+    key: 'ok', label: '已同步', cls: 'adopted',
+    title: 'AP 已应用最新配置 rev ' + dev.applied_rev
+      + (dev.sync_at ? '（' + ago(dev.sync_at) + '）' : '')
+  };
+}
+
 function renderDevices(list) {
   $('total').textContent = list.length;
   $('ap-online').textContent = list.filter(x => x.online).length;
@@ -3244,23 +3302,27 @@ function renderDevices(list) {
       b.title = '尚未采纳 · 当前' + (dev.online ? '在线' : '离线');
     }
     stRow1.appendChild(b);
-    // 漂移是本地文件与上次下发的差异，只在 AP 在线时展示：离线设备的
-    // 文件无法重新读取，显示旧结论会误导操作员。
-    if (dev.drift && dev.online) {
-      const d = document.createElement('span');
-      d.className = 'badge pending';
-      d.textContent = '配置漂移';
-      const names = (dev.drift_files || '').split(',').filter(Boolean).join('、');
-      d.title = '本地配置已被修改' + (names ? '：' + names : '')
-        + '。用「操作 → 重新下发」可覆盖本地修改。';
-      stRow1.appendChild(d);
+    // 配置状态与「在线/待采纳」是两条独立的轴：在线只说明心跳通，不代表
+    // 配置一致。漂移因此并入这里，不再单独挂一个徽章抢注意力。
+    const cfgState = configStatus(dev);
+    if (cfgState) {
+      st.dataset.cfg = cfgState.key;
+      const c = document.createElement('span');
+      c.className = 'badge ' + cfgState.cls;
+      c.textContent = cfgState.label;
+      c.title = cfgState.title;
+      stRow1.appendChild(c);
     }
     stack.appendChild(stRow1);
 
     // 第二行：配置归属。每个条目是一个整词 span，换行时整体下移不切断。
+    // rev 不再是主信息，加了标签并降为副文本：结论已经在上面一行。
     const cfg = [];
-    if (dev.config_rev > 0)
-      cfg.push('rev ' + dev.config_rev + (dev.applied_rev ? '/' + dev.applied_rev : ''));
+    if (dev.config_rev > 0) cfg.push('配置 rev ' + dev.config_rev);
+    if (dev.applied_rev > 0) {
+      cfg.push('已应用 rev ' + dev.applied_rev
+        + (dev.sync_at ? ' · ' + ago(dev.sync_at) : ''));
+    }
     // 采纳状态不显示模板时，操作员无法看出这台机器跑的是哪套配置，
     // 解绑重采纳时就容易选错（曾因此拿占位 default 模板去采纳真机）。
     if (dev.template_id) cfg.push('模板 ' + dev.template_id);
@@ -7807,21 +7869,24 @@ function fillClientPicker(list) {
       + '<button type="button" class="ui-chip" data-filter="pending" aria-pressed="false">待采纳</button>'
       + '<button type="button" class="ui-chip" data-filter="adopted" aria-pressed="false">已采纳</button>'
       + '<button type="button" class="ui-chip" data-filter="offline" aria-pressed="false">离线</button>'
+      + '<button type="button" class="ui-chip" data-filter="cfg-pending" aria-pressed="false">待下发</button>'
+      + '<button type="button" class="ui-chip" data-filter="cfg-error" aria-pressed="false">配置异常</button>'
       + '</div><span class="ui-filter-count" id="ui-filter-count" aria-live="polite"></span>';
     table.parentNode.insertBefore(bar, table);
   }
 
-  /* 状态列：renderDevices 在 td 上直接写了 data-adopt / data-offline，
+  /* 状态列：renderDevices 在 td 上直接写了 data-adopt / data-offline / data-cfg，
      读属性即可；徽章推断只作为旧结构的兜底 */
   function stateOf(tr) {
     const st = tr.children[5];
-    if (!st) return { adopt: '', offline: false };
+    if (!st) return { adopt: '', offline: false, cfg: '' };
     if (st.dataset && st.dataset.adopt)
-      return { adopt: st.dataset.adopt, offline: st.dataset.offline === '1' };
+      return { adopt: st.dataset.adopt, offline: st.dataset.offline === '1', cfg: st.dataset.cfg || '' };
     const badges = qa('.badge', st), first = badges[0];
     return {
       adopt: first ? (first.classList.contains('pending') ? 'pending' : first.classList.contains('adopted') ? 'adopted' : '') : '',
-      offline: badges.some((b) => b.classList.contains('offline'))
+      offline: badges.some((b) => b.classList.contains('offline')),
+      cfg: ''
     };
   }
   function resetFilter() {
@@ -7847,6 +7912,9 @@ function fillClientPicker(list) {
       if (ok && filter === 'pending') ok = s.adopt === 'pending';
       else if (ok && filter === 'adopted') ok = s.adopt === 'adopted';
       else if (ok && filter === 'offline') ok = s.offline;
+      else if (ok && filter === 'cfg-pending') ok = s.cfg === 'pending' || s.cfg === 'none';
+      else if (ok && filter === 'cfg-error')
+        ok = s.cfg === 'drift' || s.cfg === 'failed' || s.cfg === 'rollback';
       tr.hidden = !ok;
       if (ok) shown++;
     });

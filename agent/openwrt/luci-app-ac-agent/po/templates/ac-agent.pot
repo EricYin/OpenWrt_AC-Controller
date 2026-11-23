@@ -92,10 +92,34 @@ msgstr ""
 msgid "nothing applied yet"
 msgstr ""
 
-msgid "rev %d applied, rev %d pending"
+msgid "local drift"
 msgstr ""
 
-msgid "rev %d"
+msgid "awaiting push"
+msgstr ""
+
+msgid "last apply failed"
+msgstr ""
+
+msgid "in sync"
+msgstr ""
+
+msgid "rev %d applied"
+msgstr ""
+
+msgid "rev %d pending"
+msgstr ""
+
+msgid "Configuration drift"
+msgstr ""
+
+msgid "changed on the AP: %s"
+msgstr ""
+
+msgid "files written by the controller no longer match the local copy"
+msgstr ""
+
+msgid "Last error"
 msgstr ""
 
 msgid "Last heartbeat"
