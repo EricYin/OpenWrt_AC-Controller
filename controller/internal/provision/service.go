@@ -190,7 +190,7 @@ func (s *Service) RepushWireless(ctx context.Context, mac string) (Result, error
 
 	sum := sha256.Sum256(blob)
 	digest := hex.EncodeToString(sum[:])
-	if err := s.Store.CommitAdoption(ctx, device, device.TemplateID, rev, digest, blob); err != nil {
+	if err := s.Store.CommitAdoption(ctx, device, device.TemplateID, rev, digest, manifestFiles(manifest), blob); err != nil {
 		return Result{}, err
 	}
 	if s.PackageHistory > 0 {
@@ -641,7 +641,7 @@ func (s *Service) generateAndAdopt(ctx context.Context, device store.Device, tem
 
 	sum := sha256.Sum256(blob)
 	digest := hex.EncodeToString(sum[:])
-	if err := s.Store.CommitAdoption(ctx, device, templateID, rev, digest, blob); err != nil {
+	if err := s.Store.CommitAdoption(ctx, device, templateID, rev, digest, manifestFiles(manifest), blob); err != nil {
 		return Result{}, err
 	}
 	if s.PackageHistory > 0 {
@@ -665,6 +665,18 @@ func (s *Service) Package(ctx context.Context, mac string, rev int) (store.Packa
 		return s.Store.LatestPackage(ctx, mac)
 	}
 	return s.Store.PackageByRev(ctx, mac, rev)
+}
+
+// manifestFiles returns the carried file names in a stable order. The push
+// history displays them as a list, and map iteration would reshuffle it on
+// every read.
+func manifestFiles(m bundle.Manifest) []string {
+	names := make([]string, 0, len(m.Files))
+	for name := range m.Files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // addressOnly drops a CIDR suffix so a template address can be compared with

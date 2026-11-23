@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -280,10 +281,20 @@ func TestRepushIncrementsRevision(t *testing.T) {
 	}
 
 	list := decode[struct {
-		Packages []store.Package `json:"packages"`
+		Packages []revisionView `json:"packages"`
 	}](t, f.do(http.MethodGet, "/api/v1/devices/"+testMAC+"/packages", nil))
 	if len(list.Packages) != 2 {
-		t.Errorf("package count = %d, want 2", len(list.Packages))
+		t.Fatalf("package count = %d, want 2", len(list.Packages))
+	}
+	// Newest first, and with no heartbeat yet both revisions are still pending.
+	// The files list is what lets the history view show whether a push touched
+	// the network file.
+	latestRev := list.Packages[0]
+	if latestRev.Rev != 2 || latestRev.Result != "pending" {
+		t.Errorf("newest history row = rev %d result %q, want rev 2 pending", latestRev.Rev, latestRev.Result)
+	}
+	if len(latestRev.Files) == 0 || !slices.Contains(latestRev.Files, "wireless") {
+		t.Errorf("history files = %v, want the rendered file names", latestRev.Files)
 	}
 }
 

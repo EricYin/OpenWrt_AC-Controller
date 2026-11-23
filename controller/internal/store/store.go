@@ -424,6 +424,7 @@ CREATE TABLE IF NOT EXISTS packages (
 	created_at INTEGER NOT NULL,
 	sha256     TEXT NOT NULL,
 	size       INTEGER NOT NULL,
+	files      TEXT NOT NULL DEFAULT '',
 	blob       BLOB NOT NULL,
 	PRIMARY KEY (mac, rev)
 );
@@ -528,6 +529,13 @@ CREATE TABLE IF NOT EXISTS settings (
 	// deployments; samples written before it exist keep the default ''.
 	if err := s.addColumnIfMissing(ctx, "radio_samples", "country",
 		`ALTER TABLE radio_samples ADD COLUMN country TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+
+	// packages learned to record which uci files a revision carried. Rows
+	// written before that keep '', which the history view renders as "unknown".
+	if err := s.addColumnIfMissing(ctx, "packages", "files",
+		`ALTER TABLE packages ADD COLUMN files TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
 

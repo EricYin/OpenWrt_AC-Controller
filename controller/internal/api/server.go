@@ -24,6 +24,7 @@ import (
 	"github.com/naoki66/ac-controller/controller/internal/provision"
 	"github.com/naoki66/ac-controller/controller/internal/store"
 	"github.com/naoki66/ac-controller/shared/model"
+	"github.com/naoki66/ac-controller/shared/proto"
 	"github.com/naoki66/ac-controller/shared/secret"
 	"github.com/naoki66/ac-controller/shared/version"
 )
@@ -901,17 +902,78 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(blob)
 }
 
+// revisionView is one row of a device's push history: the stored package plus
+// the AP's verdict on that revision. The verdict is derived at read time from
+// the device row, so it always reflects the latest heartbeat instead of a
+// value frozen when the row was written.
+type revisionView struct {
+	store.Package
+	Result  string `json:"result"`
+	Message string `json:"message,omitempty"`
+}
+
+// revisionResult names what became of one issued revision. "applied" is only
+// reported when nothing contradicts it: a local edit on the current revision
+// reads as drift, and the newest revision stays "pending" until the AP applies
+// it, even if the controller generated it a moment ago.
+func revisionResult(rev int, d store.Device) (string, string) {
+	switch {
+	case rev == d.ConfigRev && d.SyncState == proto.SyncFailed:
+		return "failed", d.SyncMessage
+	case rev == d.ConfigRev && d.SyncState == proto.SyncRollback:
+		return "rollback", d.SyncMessage
+	case rev == d.AppliedRev && rev == d.ConfigRev && d.Drift:
+		return "drift", d.DriftFiles
+	case rev == d.AppliedRev:
+		return "applied", ""
+	case rev > d.AppliedRev:
+		return "pending", ""
+	default:
+		return "superseded", ""
+	}
+}
+
 func (s *Server) handlePackages(w http.ResponseWriter, r *http.Request) {
 	mac, ok := pathMAC(w, r)
 	if !ok {
 		return
+	}
+	// The history view wants the newest handful; without a cap an AP that has
+	// been re-pushed for years would ship its whole revision log on every open.
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("limit must be a positive integer"))
+			return
+		}
+		limit = min(n, 200)
 	}
 	list, err := s.Store.ListPackages(r.Context(), mac)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"packages": list})
+	dev, err := s.Store.GetDevice(r.Context(), mac)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	history := make([]revisionView, 0, min(limit, len(list)))
+	for _, p := range list {
+		if len(history) == limit {
+			break
+		}
+		result, message := revisionResult(p.Rev, dev)
+		history = append(history, revisionView{Package: p, Result: result, Message: message})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"packages":    history,
+		"config_rev":  dev.ConfigRev,
+		"applied_rev": dev.AppliedRev,
+		"config_sha":  dev.ConfigSHA,
+		"applied_sha": dev.AppliedSHA,
+	})
 }
 
 func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {

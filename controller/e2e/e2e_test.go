@@ -549,7 +549,7 @@ func TestAgentRejectsTamperedPackage(t *testing.T) {
 	// Now corrupt the stored package on the controller side and bump the rev so
 	// the agent is forced to fetch it again.
 	ctx := context.Background()
-	if err := ac.store.CreatePackage(ctx, apMAC, 2, "deadbeef", []byte("not a tarball")); err != nil {
+	if err := ac.store.CreatePackage(ctx, apMAC, 2, "deadbeef", nil, []byte("not a tarball")); err != nil {
 		t.Fatalf("inject package: %v", err)
 	}
 	if err := ac.store.SetConfigRev(ctx, apMAC, 2); err != nil {

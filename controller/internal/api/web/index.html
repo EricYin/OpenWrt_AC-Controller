@@ -149,6 +149,12 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
   }
   .dev-ops button span { font-weight: 400; font-size: 12px; color: var(--muted); }
   .dev-ops button.danger { border-color: rgba(239, 68, 68, .5); color: #f2a0a0; }
+  /* 下发历史：弹窗宽度有限，表格允许横向滚动而不是把指纹挤成两行 */
+  .rev-list { max-height: 52vh; overflow: auto; margin-top: 12px; }
+  .rev-list table { background: transparent; }
+  .rev-list th, .rev-list td { padding: 6px 10px; font-size: 12px; white-space: nowrap; }
+  .rev-list td.files { white-space: normal; color: var(--muted); }
+  .rev-list .empty { padding: 18px; }
   .sig-bar {
     display: inline-block; width: 34px; height: 4px; border-radius: 2px;
     background: #2b323b; margin-right: 8px; vertical-align: middle; overflow: hidden;
@@ -2253,6 +2259,7 @@ rows.addEventListener('click', (ev) => {
 const DEV_ACTIONS = [
   ['edit_ip',       '修改管理 IP', '按模板接口手动指定每接口管理地址，留空＝自动错开；可保存后立即下发', false],
   ['repush',        '重新下发',  '用当前模板重新生成配置包（rev+1），AP 下个心跳周期拉取；若会更换管理地址将先确认', false],
+  ['revisions',     '下发历史',  '查看最近几次配置包：rev、指纹、包含的文件与 AP 的应用结果', false],
   ['download',      '下载配置包', '下载当前 rev 的签名配置包 JSON，用于离线调试', false],
   ['wifi_reload',   '重启无线',  '只重启 hostapd，客户端短暂断连后自动重连', false],
   ['reboot',        '重启 AP',  '整机重启，约 1 分钟内离线，期间无线全部中断', false],
@@ -2297,12 +2304,97 @@ function openDevActions(mac) {
   devActionsMask.classList.remove('hidden');
 }
 
+// 最近的下发历史：数据来自 packages 表，结果由后端按当前 applied_rev /
+// sync_state 推导，所以同一行在 AP 上报前后会给出不同结论。文件列表来自
+// 生成时记录的 manifest，能直接看出这次下发是否碰过 network。
+const REV_RESULTS = {
+  applied:    ['已应用', 'adopted'],
+  pending:    ['待应用', 'sync'],
+  failed:     ['应用失败', 'failed'],
+  rollback:   ['已回滚', 'pending'],
+  drift:      ['已应用 · 漂移', 'pending'],
+  superseded: ['已覆盖', 'offline']
+};
+
+async function openRevisions(mac) {
+  const dev = deviceCache.find(x => x.mac === mac);
+  devActionsCard.innerHTML = '';
+  const h = document.createElement('h2');
+  h.textContent = '下发历史';
+  const sub = document.createElement('div');
+  sub.className = 'sub';
+  sub.textContent = ((dev && dev.hostname) || '未知设备') + ' · ' + mac;
+  const box = document.createElement('div');
+  box.className = 'rev-list';
+  box.textContent = '加载中…';
+  const closeRow = document.createElement('div');
+  closeRow.style.textAlign = 'right';
+  closeRow.style.marginTop = '10px';
+  const closeBtn = document.createElement('button');
+  closeBtn.id = 'dev-actions-close';
+  closeBtn.textContent = '关闭';
+  closeRow.appendChild(closeBtn);
+  devActionsCard.append(h, sub, box, closeRow);
+  devActionsMask.classList.remove('hidden');
+
+  try {
+    const res = await api('GET', '/api/v1/devices/' + encodeURIComponent(mac) + '/packages?limit=20');
+    const list = (res && res.packages) || [];
+    box.textContent = '';
+    if (!list.length) {
+      box.innerHTML = '<div class="empty">还没有为这台 AP 生成过配置包</div>';
+      return;
+    }
+    const table = document.createElement('table');
+    const head = document.createElement('tr');
+    for (const title of ['rev', '指纹', '包含文件', '生成时间', '结果']) {
+      const th = document.createElement('th');
+      th.textContent = title;
+      head.appendChild(th);
+    }
+    table.appendChild(head);
+    for (const p of list) {
+      const tr = document.createElement('tr');
+      const rev = document.createElement('td');
+      rev.className = 'mono';
+      rev.textContent = p.rev;
+      tr.appendChild(rev);
+      const fp = document.createElement('td');
+      fp.className = 'mono';
+      fp.textContent = (p.sha256 || '').slice(0, 8) || '—';
+      fp.title = p.sha256 || '';
+      tr.appendChild(fp);
+      const files = document.createElement('td');
+      files.className = 'files';
+      files.textContent = (p.files && p.files.length) ? p.files.join('、') : '—';
+      tr.appendChild(files);
+      const at = document.createElement('td');
+      at.textContent = when(p.created_at);
+      at.title = ago(p.created_at);
+      tr.appendChild(at);
+      const verdict = REV_RESULTS[p.result] || [p.result || '—', 'offline'];
+      const resTd = document.createElement('td');
+      const bd = document.createElement('span');
+      bd.className = 'badge ' + verdict[1];
+      bd.textContent = verdict[0];
+      if (p.message) bd.title = p.message;
+      resTd.appendChild(bd);
+      tr.appendChild(resTd);
+      table.appendChild(tr);
+    }
+    box.appendChild(table);
+  } catch (e) {
+    box.textContent = '读取失败：' + e.message;
+  }
+}
+
 devActionsCard.addEventListener('click', (ev) => {
   const b = ev.target.closest('button');
   if (!b) return;
   if (b.id === 'dev-actions-close') { closeDevActions(); return; }
   // edit_ip 不走 act()：它打开的是编辑弹窗而不是立即执行的动作。
   if (b.dataset.action === 'edit_ip') { closeDevActions(); openIPEdit(b.dataset.mac); return; }
+  if (b.dataset.action === 'revisions') { openRevisions(b.dataset.mac); return; }
   closeDevActions();
   act(b.dataset.action, b.dataset.mac, b);
 });

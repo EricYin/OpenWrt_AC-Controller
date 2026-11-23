@@ -39,7 +39,7 @@ func TestEnrollmentResetRejectsStaleRegistrationAndApproval(t *testing.T) {
 		return current
 	}
 	register("ap-key", "original", 0, true)
-	if err := st.CommitAdoption(ctx, read(), "default", 1, "digest", []byte("rev1")); err != nil {
+	if err := st.CommitAdoption(ctx, read(), "default", 1, "digest", nil, []byte("rev1")); err != nil {
 		t.Fatal(err)
 	}
 	previous := read()
@@ -61,10 +61,10 @@ func TestEnrollmentResetRejectsStaleRegistrationAndApproval(t *testing.T) {
 	if pending, err := st.PendingActions(ctx, d.MAC, 10); err != nil || len(pending) != 0 {
 		t.Fatalf("old actions survived reset: %v, %v", pending, err)
 	}
-	if err := st.CommitAdoption(ctx, previous, "default", 2, "digest", []byte("stale")); !errors.Is(err, ErrDeviceChanged) {
+	if err := st.CommitAdoption(ctx, previous, "default", 2, "digest", nil, []byte("stale")); !errors.Is(err, ErrDeviceChanged) {
 		t.Fatalf("old approval during reset should fail: %v", err)
 	}
-	if err := st.CommitAdoption(ctx, read(), "default", 2, "digest", []byte("rev2")); err != nil {
+	if err := st.CommitAdoption(ctx, read(), "default", 2, "digest", nil, []byte("rev2")); err != nil {
 		t.Fatal(err)
 	}
 	register("ap-key", "original", 0, false)
@@ -157,10 +157,10 @@ func TestPackageRevisionsAreImmutable(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	if err := st.CreatePackage(ctx, "8c:de:52:11:22:33", 1, "aa", []byte("first")); err != nil {
+	if err := st.CreatePackage(ctx, "8c:de:52:11:22:33", 1, "aa", []string{"wireless"}, []byte("first")); err != nil {
 		t.Fatalf("create rev 1: %v", err)
 	}
-	if err := st.CreatePackage(ctx, "8c:de:52:11:22:33", 1, "bb", []byte("second")); err == nil {
+	if err := st.CreatePackage(ctx, "8c:de:52:11:22:33", 1, "bb", nil, []byte("second")); err == nil {
 		t.Fatal("overwriting an existing revision was allowed")
 	}
 
@@ -172,7 +172,7 @@ func TestPackageRevisionsAreImmutable(t *testing.T) {
 		t.Errorf("latest package = %+v %q", pkg, blob)
 	}
 
-	if err := st.CreatePackage(ctx, "8c:de:52:11:22:33", 2, "cc", []byte("third")); err != nil {
+	if err := st.CreatePackage(ctx, "8c:de:52:11:22:33", 2, "cc", []string{"wireless", "network"}, []byte("third")); err != nil {
 		t.Fatalf("create rev 2: %v", err)
 	}
 	pkg, _, err = st.LatestPackage(ctx, "8c:de:52:11:22:33")
