@@ -1481,29 +1481,32 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
           <button id="roam-save" class="primary">保存策略</button>
         </h2>
         <p class="note">
-          开启后 AP 在本地按 3 秒采样（有弱客户端时）/10 秒（空闲）：信号 ≤ 阈值且连续 N 次才算粘性，
-          接收速率仍高于门限的客户端不会被移动。未开启时只保留内置的保守建议（-78 dBm 起，依赖 AP 间通告）；
-          关闭并重新下发后 AP 恢复被动模式。AP 连续 3 次建议都被拒绝时会静默 30 分钟。
+          开启后，AP 会持续观察连在自己身上的客户端。只有当信号一直低于“触发阈值”、
+          并连续出现设定次数时，AP 才建议客户端改连到信号更好的 AP（802.11v 建议，
+          不会直接断开）。信号看着差、但实际接收速率仍高于“速率门限”的客户端会被放过，
+          避免把正在正常上网的设备赶走。客户端连续 3 次不接受建议时，AP 会暂停 30 分钟再试。
+          未开启时 AP 不主动引导，只在信号极弱（≤ -78 dBm）且能发现邻居 AP 时给一次保守建议。
+          修改后需要重新下发才会生效。
         </p>
         <div class="wl-editor">
           <div class="wl-checks" style="margin-bottom:12px">
-            <label><input type="checkbox" id="roam-enabled"> 启用 802.11v 漫游引导</label>
-            <label><input type="checkbox" id="roam-imminent" data-roam-field> BTM 标记 disassociation imminent</label>
+            <label title="按下面的阈值主动引导客户端漫游；关闭后 AP 恢复被动模式"><input type="checkbox" id="roam-enabled"> 启用 802.11v 漫游引导</label>
+            <label title="在建议中标记“即将断开”，支持该标记的客户端会更积极地迁移"><input type="checkbox" id="roam-imminent" data-roam-field> BTM 标记 disassociation imminent</label>
           </div>
           <div class="wl-fields">
-            <label>触发阈值（dBm）<input id="roam-btm-snr" data-roam-field type="number" step="1" min="-95" max="-40"></label>
-            <label>连续弱采样次数<input id="roam-consecutive" data-roam-field type="number" step="1" min="1" max="60"></label>
-            <label>刚接入保护（秒）<input id="roam-min-connected" data-roam-field type="number" step="1" min="0" max="600"></label>
-            <label>建议冷却（秒）<input id="roam-cooldown" data-roam-field type="number" step="1" min="10" max="3600"></label>
-            <label>速率门限（Mbps，-1 关闭）<input id="roam-min-rate" data-roam-field type="number" step="1" min="-1" max="1000"></label>
+            <label title="客户端信号低于或等于这个值才算弱。常用 -70；数值越低越不敏感">触发阈值（dBm）<input id="roam-btm-snr" data-roam-field type="number" step="1" min="-95" max="-40"></label>
+            <label title="连续多少次检查都弱才发建议，次数越多越保守">连续弱采样次数<input id="roam-consecutive" data-roam-field type="number" step="1" min="1" max="60"></label>
+            <label title="客户端刚连上后的这段时间里不建议它离开，避免来回跳">刚接入保护（秒）<input id="roam-min-connected" data-roam-field type="number" step="1" min="0" max="600"></label>
+            <label title="对同一个客户端，两次建议之间至少间隔这么久">建议冷却（秒）<input id="roam-cooldown" data-roam-field type="number" step="1" min="10" max="3600"></label>
+            <label title="实际接收速率高于这个值时，即使信号差也不移动它；填 -1 关闭这项检查">速率门限（Mbps，-1 关闭）<input id="roam-min-rate" data-roam-field type="number" step="1" min="-1" max="1000"></label>
           </div>
           <details style="margin-top:14px">
             <summary class="wl-roam-title">高级：忽略建议后强制下线</summary>
             <div class="wl-fields" style="margin-top:12px">
-              <label>等待时间（秒，0 关闭）<input id="roam-force" data-roam-field type="number" step="1" min="0" max="600"></label>
-              <label>禁止回连（秒）<input id="roam-ban" data-roam-field type="number" step="1" min="0" max="1800"></label>
+              <label title="发出建议后等多久仍不移动才强制断开；0 表示只建议、不断开">等待时间（秒，0 关闭）<input id="roam-force" data-roam-field type="number" step="1" min="0" max="600"></label>
+              <label title="强制断开后，在本 AP 上禁止它重新连回的时间">禁止回连（秒）<input id="roam-ban" data-roam-field type="number" step="1" min="0" max="1800"></label>
             </div>
-            <p class="hint">强制下线只在“等待时间 &gt; 0”时启用；禁回连让客户端只能落到邻居 AP，设置过长会表现为掉线。</p>
+            <p class="hint">只有“等待时间”大于 0 时才会强制下线：AP 先发建议，客户端在等待时间内没有动作才断开它，并在“禁止回连”时间内拒绝它连回本 AP，促使它改连邻居。时间过长会让客户端表现为掉线，建议先用默认值观察。</p>
           </details>
         </div>
         <div class="msg" id="roam-msg"></div>
