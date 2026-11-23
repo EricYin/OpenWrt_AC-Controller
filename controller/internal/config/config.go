@@ -72,6 +72,12 @@ type Config struct {
 	PackageHistory int
 	// EventsMax caps the audit log. Zero keeps every event.
 	EventsMax int
+	// CookieSecure forces the session cookie's Secure flag. Needed when a TLS
+	// reverse proxy terminates HTTPS: the controller itself sees plain HTTP.
+	CookieSecure bool
+	// TrustProxy enables X-Forwarded-For / X-Forwarded-Proto handling. Off by
+	// default because those headers are client-controlled without a proxy.
+	TrustProxy bool
 }
 
 func Load() Config {
@@ -111,6 +117,8 @@ func Load() Config {
 	c.FirmwareEnabled = boolEnv("AC_FIRMWARE", !openwrt)
 	c.PackageHistory = intEnv("AC_PACKAGE_HISTORY", 0)
 	c.EventsMax = intEnv("AC_EVENTS_MAX", 0)
+	c.CookieSecure = boolEnv("AC_COOKIE_SECURE", false)
+	c.TrustProxy = boolEnv("AC_TRUST_PROXY", false)
 	if openwrt {
 		// Router-friendly defaults, applied only when the operator did not ask
 		// for something else explicitly: keep one signed revision per AP, bound

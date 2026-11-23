@@ -35,9 +35,10 @@ const (
 	sessionCookieName = "ac_session"
 	sessionTTL        = 24 * time.Hour
 
-	// pbkdf2Iterations is cheap enough for a NAS CPU (tens of milliseconds per
-	// login) while keeping offline guessing of a leaked database expensive.
-	pbkdf2Iterations = 120000
+	// pbkdf2Iterations follows the current OWASP guidance for PBKDF2-HMAC-SHA256.
+	// Existing hashes are re-derived transparently on the next successful login,
+	// so raising this never locks an operator out.
+	pbkdf2Iterations = 600000
 	pbkdf2KeyLen     = 32
 )
 
@@ -120,9 +121,46 @@ func (s *Server) adminAccount(ctx context.Context) (user, hash string, err error
 
 // isDefaultPassword reports whether the stored hash still matches the seeded
 // default, so the UI can keep asking the operator to change it.
+//
+// The result is cached: verifying costs a full PBKDF2 derivation, and the
+// session probe asks on every page load. Only this process writes the hash, so
+// the cache is invalidated at the same places the account changes.
 func (s *Server) isDefaultPassword(ctx context.Context) bool {
+	s.defaultPassMu.RLock()
+	cached := s.defaultPass
+	s.defaultPassMu.RUnlock()
+	if cached != nil {
+		return *cached
+	}
 	_, hash, err := s.adminAccount(ctx)
-	return err == nil && verifyPassword(hash, defaultAdminPassword)
+	if err != nil {
+		// Do not cache a transient read failure: the seeded account may simply
+		// not exist yet when the first probe arrives during startup.
+		return false
+	}
+	v := verifyPassword(hash, defaultAdminPassword)
+	s.defaultPassMu.Lock()
+	s.defaultPass = &v
+	s.defaultPassMu.Unlock()
+	return v
+}
+
+// invalidateDefaultPassword drops the cached verdict after a password write.
+func (s *Server) invalidateDefaultPassword() {
+	s.defaultPassMu.Lock()
+	s.defaultPass = nil
+	s.defaultPassMu.Unlock()
+}
+
+// passwordNeedsRehash reports whether a stored hash uses an older derivation
+// cost. Unknown formats are not rewritten here: they simply fail verification.
+func passwordNeedsRehash(stored string) bool {
+	parts := strings.Split(stored, "$")
+	if len(parts) != 4 || parts[0] != "pbkdf2-sha256" {
+		return false
+	}
+	iter, err := strconv.Atoi(parts[1])
+	return err == nil && iter < pbkdf2Iterations
 }
 
 // --- sessions ---------------------------------------------------------------
@@ -205,7 +243,7 @@ func (s *Server) sessionFrom(r *http.Request) (session, bool) {
 	return s.sessions.lookup(c.Value)
 }
 
-func setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
@@ -214,7 +252,7 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
 		// Lax still keeps the cookie off cross-site POSTs, which is the CSRF
 		// surface that matters here, while surviving normal navigations.
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		Secure:   s.requestSecure(r),
 		MaxAge:   int(sessionTTL / time.Second),
 	})
 }
@@ -244,7 +282,7 @@ type credentialsRequest struct {
 // operator sharing an address with a guesser is not locked out.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	ip := remoteIP(r)
+	ip := s.remoteIP(r)
 
 	var req credentialsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -287,12 +325,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auth.reset(ip)
+	// A successful login is the natural moment to raise an old hash: the
+	// plaintext is in hand and only this process writes the account.
+	if passwordNeedsRehash(hash) {
+		if newHash, err := hashPassword(req.Password); err == nil {
+			if err := s.Store.SetSetting(r.Context(), store.SettingAdminPass, newHash); err == nil {
+				s.invalidateDefaultPassword()
+			}
+		}
+	}
 	token, err := s.sessions.create(user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	setSessionCookie(w, r, token)
+	s.setSessionCookie(w, r, token)
 	s.Store.LogEvent(r.Context(), "auth", "", "login succeeded from "+ip)
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -300,7 +347,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// object to both the login response and the startup probe.
 		"authenticated":    true,
 		"username":         user,
-		"default_password": verifyPassword(hash, defaultAdminPassword),
+		"default_password": s.isDefaultPassword(r.Context()),
 	})
 }
 
@@ -402,6 +449,7 @@ func (s *Server) handleChangeAccount(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		s.invalidateDefaultPassword()
 	}
 
 	s.sessions.revokeUser(user)
@@ -410,7 +458,7 @@ func (s *Server) handleChangeAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	setSessionCookie(w, r, token)
+	s.setSessionCookie(w, r, token)
 
 	msg := "admin account changed"
 	switch {

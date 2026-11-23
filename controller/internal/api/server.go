@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/naoki66/ac-controller/controller/internal/discovery"
@@ -77,6 +78,11 @@ type Server struct {
 	// zero value is usable; a restart logs everyone out.
 	sessions sessionStore
 
+	// defaultPass caches whether the stored hash still matches the seeded
+	// default. Nil means "not computed yet"; every password write clears it.
+	defaultPassMu sync.RWMutex
+	defaultPass   *bool
+
 	// secretOverride mirrors the shared_secret row in the settings table. It
 	// is read on every AP request, hence the lock; writes are one-per-click.
 	secretMu       sync.RWMutex
@@ -92,6 +98,23 @@ type Server struct {
 	// feature set, so tests and embedders that build a Server directly keep
 	// working unchanged.
 	Features *FeatureGate
+
+	// CookieSecure forces the session cookie's Secure flag. Deployments behind
+	// a TLS-terminating reverse proxy need this: r.TLS is nil there, and a
+	// non-Secure cookie would travel in clear text on any downgrade.
+	CookieSecure bool
+	// TrustProxy lets X-Forwarded-For / X-Forwarded-Proto influence the login
+	// rate-limit key, the cookie's Secure flag and HSTS. Off by default because
+	// both headers are client-controlled unless a proxy always overwrites them.
+	TrustProxy bool
+
+	// startedAt anchors the uptime metric. Counters are process-local and reset
+	// on restart, which is the Prometheus convention for a restartable process.
+	startedAt   time.Time
+	helloTotal  atomic.Uint64
+	helloFailed atomic.Uint64
+	httpTotal   atomic.Uint64
+	httpErrors  atomic.Uint64
 }
 
 // FeatureGate describes which optional subsystems this deployment runs. It is
@@ -177,6 +200,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/v1/ac/pubkey", s.handlePubKey)
 	mux.HandleFunc("POST /api/v1/ap/hello", s.handleHello)
 	if s.RequireSignedAP {
@@ -290,7 +314,10 @@ func (s *Server) Handler() http.Handler {
 	// The UI itself stays reachable without a token: it holds no data of its
 	// own, and the page has to load before it can ask for one.
 	mux.Handle("/", http.FileServer(http.FS(sub)))
-	return logRequests(s.Log, mux)
+	// Order matters: security headers must be on every response (including
+	// 401/429 answers), the body limit must wrap the request before any handler
+	// reads it, and the observer records the final status.
+	return s.observe(securityHeaders(s.TrustProxy, limitRequestBody(mux)))
 }
 
 // adminOnly rejects a request unless it carries a logged-in session or the
@@ -308,7 +335,7 @@ func (s *Server) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 			s.rejectAuth(w, r, "login required")
 			return
 		}
-		s.auth.reset(remoteIP(r))
+		s.auth.reset(s.remoteIP(r))
 		next(w, r)
 	}
 }
@@ -319,7 +346,7 @@ func (s *Server) adminOrAP(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if s.authorizedAdmin(r) {
-			s.auth.reset(remoteIP(r))
+			s.auth.reset(s.remoteIP(r))
 			next(w, r)
 			return
 		}
@@ -336,7 +363,7 @@ func (s *Server) adminOrAP(next http.HandlerFunc) http.HandlerFunc {
 			s.rejectAuth(w, r, "invalid or missing token")
 			return
 		}
-		s.auth.reset(remoteIP(r))
+		s.auth.reset(s.remoteIP(r))
 		next(w, r)
 	}
 }
@@ -431,7 +458,7 @@ func (t *authTracker) reset(ip string) {
 // answers 429 with Retry-After. The credential check itself happens before this,
 // so a correct token is never blocked by someone else's failures.
 func (s *Server) rejectAuth(w http.ResponseWriter, r *http.Request, reason string) {
-	ip := remoteIP(r)
+	ip := s.remoteIP(r)
 	if bearerPresent(r) {
 		if wait, ok := s.auth.blocked(ip); ok {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(wait)))
@@ -454,14 +481,37 @@ func (s *Server) rejectAuth(w http.ResponseWriter, r *http.Request, reason strin
 	writeError(w, http.StatusUnauthorized, errors.New(reason))
 }
 
-// remoteIP strips the port from r.RemoteAddr, yielding the address the rate
-// limit is keyed on.
-func remoteIP(r *http.Request) string {
-	host := r.RemoteAddr
-	if i := strings.LastIndexByte(host, ':'); i > 0 {
-		host = host[:i]
+// remoteIP returns the address the rate limiter keys on. X-Forwarded-For is
+// client-controlled, so it is consulted only when the deployment explicitly
+// declares a trusted reverse proxy; otherwise every caller could rotate the
+// header and defeat the failure budget.
+func (s *Server) remoteIP(r *http.Request) string {
+	if s.TrustProxy {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			if i := strings.IndexByte(fwd, ','); i > 0 {
+				return strings.TrimSpace(fwd[:i])
+			}
+			return strings.TrimSpace(fwd)
+		}
 	}
-	return strings.Trim(host, "[]")
+	return hostOnly(r.RemoteAddr)
+}
+
+// hostOnly strips the port from a "host:port" address.
+func hostOnly(addr string) string {
+	if i := strings.LastIndexByte(addr, ':'); i > 0 {
+		addr = addr[:i]
+	}
+	return strings.Trim(addr, "[]")
+}
+
+// requestSecure reports whether the browser reached the controller over TLS,
+// either directly or through a trusted proxy that says so.
+func (s *Server) requestSecure(r *http.Request) bool {
+	if r.TLS != nil || s.CookieSecure {
+		return true
+	}
+	return s.TrustProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func bearerPresent(r *http.Request) bool {
@@ -1275,9 +1325,137 @@ func validAddress(s string) bool {
 	return err == nil
 }
 
-func logRequests(log *slog.Logger, next http.Handler) http.Handler {
+// maxJSONBodyBytes bounds request bodies that carry documents (login, template
+// edits, network overrides). Endpoints with their own, larger limit — AP hello,
+// firmware upload, configuration import — opt out below.
+const maxJSONBodyBytes = 1 << 20
+
+// limitRequestBody applies a default cap so a client cannot stream an endless
+// body into a JSON decoder. Handlers that need more wrap r.Body themselves with
+// a larger MaxBytesReader.
+func limitRequestBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Debug("http", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
+		switch {
+		case r.Body == nil, r.Body == http.NoBody,
+			r.Method == http.MethodGet, r.Method == http.MethodHead:
+			// No body to bound.
+		case r.URL.Path == "/api/v1/ap/hello",
+			r.URL.Path == "/api/v1/firmwares",
+			r.URL.Path == "/api/v1/config/import":
+			// These handlers enforce their own (larger) limits.
+		default:
+			r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// securityHeaders sets the browser-side protections every response should
+// carry. The CSP keeps the single-file UI working (inline script/style) while
+// still refusing external origins, framing and object embeds.
+func securityHeaders(trustProxy bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; base-uri 'self'; frame-ancestors 'none'; "+
+				"object-src 'none'; img-src 'self' data:; "+
+				"style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "+
+				"connect-src 'self'; form-action 'self'")
+		if r.TLS != nil || (trustProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")) {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// statusRecorder captures the response status for logs and metrics. Unwrap is
+// what lets http.NewResponseController reach the real writer (the AP hello
+// handler sets a read deadline through it).
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += int64(n)
+	return n, err
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// observe records one access-log line per request and keeps the counters the
+// metrics endpoint exposes. Successful polling stays at debug level so the log
+// is not dominated by 20-second heartbeats; failures are always visible.
+func (s *Server) observe(next http.Handler) http.Handler {
+	if s.startedAt.IsZero() {
+		s.startedAt = time.Now()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		id := requestID()
+		rec.Header().Set("X-Request-Id", id)
+
+		next.ServeHTTP(rec, r)
+
+		status := rec.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		s.httpTotal.Add(1)
+		if status >= 400 {
+			s.httpErrors.Add(1)
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/ap/hello" {
+			s.helloTotal.Add(1)
+			if status >= 400 {
+				s.helloFailed.Add(1)
+			}
+		}
+
+		if s.Log != nil {
+			level := slog.LevelDebug
+			// 4xx is usually a misconfigured client or an expired session, which
+			// an operator needs to see; successful 20-second polling stays quiet.
+			if status >= 400 {
+				level = slog.LevelInfo
+			}
+			s.Log.Log(r.Context(), level, "http",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", status,
+				"bytes", rec.bytes,
+				"dur_ms", time.Since(start).Milliseconds(),
+				"remote", s.remoteIP(r),
+				"req_id", id,
+			)
+		}
+	})
+}
+
+// requestID returns a short random identifier correlating a response header
+// with its log line.
+func requestID() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(buf[:])
 }

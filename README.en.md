@@ -127,7 +127,7 @@ Set `AC_ADMIN_PASSWORD` to at least 12 characters in your local Compose environm
 The compose file lists only four common deployment settings. The table below is the **complete** list of variables and their built-in defaults; anything not in compose uses its default. Set the shared secret in AP Management and the NTP list and login password in System (a saved UI value wins over the environment). Add a variable to compose only when you need to change a port, switch profiles or tune behaviour.
 
 <details>
-<summary>All 19 environment variables and defaults</summary>
+<summary>All 21 environment variables and defaults</summary>
 
 | Variable | Default | Description |
 |---|---|---|
@@ -149,7 +149,11 @@ The compose file lists only four common deployment settings. The table below is 
 | `AC_FIRMWARE` | `true` (`false` on `openwrt`) | Enable the firmware repository |
 | `AC_PACKAGE_HISTORY` | `0` unlimited (`1` on `openwrt`) | Signed revisions kept per AP |
 | `AC_EVENTS_MAX` | `0` unlimited (`500` on `openwrt`) | Audit-log cap |
+| `AC_COOKIE_SECURE` | `false` | Force the session cookie's `Secure` flag; set when a TLS reverse proxy terminates HTTPS |
+| `AC_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `X-Forwarded-Proto` (login throttling, cookie, HSTS); enable only when a proxy overwrites both headers |
 | `TZ` | `Asia/Shanghai` | Timezone for scheduled reboot / LED HH:MM values |
+
+> `GET /metrics` exposes Prometheus text metrics (AP online count, clients, heartbeat and HTTP counters, process memory). It carries aggregates only and needs no login; every other management endpoint still requires a session or Bearer token.
 
 </details>
 

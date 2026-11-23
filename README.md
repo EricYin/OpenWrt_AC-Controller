@@ -130,7 +130,7 @@ curl -s http://<宿主机IP>:8090/api/v1/health
 compose 只列出 4 个常用部署项。下表是**全部**可用变量与内置默认值，未写进 compose 的都走默认值；共享密钥在「AP 管理」设置，NTP、登录密码在「系统配置」设置（页面设置优先于环境变量）。只有需要改端口、切运行档位或调优时，才往 compose 里加对应变量。
 
 <details>
-<summary>展开全部 19 个环境变量与默认值</summary>
+<summary>展开全部 21 个环境变量与默认值</summary>
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -152,7 +152,11 @@ compose 只列出 4 个常用部署项。下表是**全部**可用变量与内�
 | `AC_FIRMWARE` | `true`（openwrt 档位 `false`） | 是否启用固件仓库 |
 | `AC_PACKAGE_HISTORY` | `0` 不限（openwrt 档位 `1`） | 每台 AP 保留的配置包版本数 |
 | `AC_EVENTS_MAX` | `0` 不限（openwrt 档位 `500`） | 事件日志条数上限 |
+| `AC_COOKIE_SECURE` | `false` | 强制会话 Cookie 带 `Secure`；TLS 反向代理终止 HTTPS 时设为 `true` |
+| `AC_TRUST_PROXY` | `false` | 信任 `X-Forwarded-For` / `X-Forwarded-Proto`（登录限流、Cookie、HSTS 使用）；仅当反向代理会覆盖这两个头时开启 |
 | `TZ` | `Asia/Shanghai` | 定时重启 / LED 的 HH:MM 时区 |
+
+> `GET /metrics` 暴露 Prometheus 文本指标（AP 在线数、客户端数、心跳与 HTTP 计数、进程内存），仅含聚合数据，无需登录；其余管理接口仍需会话或 Bearer。
 
 </details>
 

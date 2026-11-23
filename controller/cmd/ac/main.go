@@ -138,6 +138,8 @@ func serve(log *slog.Logger) error {
 		SampleInterval:  cfg.SampleInterval,
 		OfflineAfter:    cfg.OfflineAfter,
 		NTPServers:      cfg.NTPServers,
+		CookieSecure:    cfg.CookieSecure,
+		TrustProxy:      cfg.TrustProxy,
 		Log:             log,
 		Features: &api.FeatureGate{
 			Profile:          cfg.Profile,
@@ -180,7 +182,16 @@ func serve(log *slog.Logger) error {
 		Addr:              cfg.HTTPAddr,
 		Handler:           apiSrv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       90 * time.Second,
+		// A body that trickles in forever is the slow-loris variant the header
+		// timeout does not cover. The bound is generous because a sysupgrade
+		// image (up to 300 MB) may arrive over a slow wireless link; the byte
+		// caps in each handler are what actually limit the damage.
+		ReadTimeout: 15 * time.Minute,
+		// Long enough for a firmware image over a slow wireless link; short
+		// enough that a stalled reader cannot pin a goroutine indefinitely.
+		WriteTimeout:   15 * time.Minute,
+		IdleTimeout:    90 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	listener := &discovery.Listener{
