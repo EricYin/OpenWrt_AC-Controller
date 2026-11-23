@@ -1274,7 +1274,7 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
         <p class="note">
           这是 AP 最近一次上报的采样（每分钟一次，见“采样”列），不是控制器下发的期望值；
           灰色行属于离线 AP。信道是 radio 实际落到的信道，不是配置里的 auto——后者只有 ACS 知道答案。
-          点“编辑”可按 AP 单独覆盖该 radio 的信道/带宽/功率（不影响共享模板），保存后需重新下发生效。
+          点“编辑”可按 AP 单独覆盖该 radio 的信道/带宽/功率（不影响共享模板），保存后立即下发生效。
         </p>
         <table>
           <thead>
@@ -1472,7 +1472,7 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
 
     <section id="view-roaming" class="hidden">
       <h1>漫游管理</h1>
-      <div class="sub">按模板设置 802.11v 引导（BTM）阈值；保存后已采纳的设备需在“无线服务”页重新下发才生效</div>
+      <div class="sub">按模板设置 802.11v 引导（BTM）阈值；保存后立即下发无线配置（不改动网络），AP 下次心跳应用</div>
 
       <div class="panel">
         <h2>
@@ -1787,6 +1787,24 @@ function deviceOptionLabel(dev, list) {
   const name = dev.hostname || dev.mac;
   if (!dev.hostname) return name;
   return list.filter(d => d.hostname === dev.hostname).length > 1 ? name + ' · ' + dev.mac : name;
+}
+
+// 按 MAC 取显示名：同名设备自动补 MAC；缓存里没有时退回心跳名或 MAC。
+function deviceLabel(mac, list) {
+  const all = list || deviceCache;
+  const dev = all.find(d => d.mac === mac);
+  if (dev) return deviceOptionLabel(dev, all);
+  return apNames[mac] || mac;
+}
+
+// 无线配置已保存并自动生成新 rev 时的提示后缀；网络文件不在包内，不会被改动。
+function wirelessPushNote(res) {
+  const push = res && res.wireless_push;
+  if (!push) return '';
+  if (push.failed && push.failed.length) {
+    return '；自动下发失败：' + push.failed[0].error + '（可稍后重新下发）';
+  }
+  return push.pushed ? '，已立即下发，AP 下次心跳应用（网络配置未改动）' : '';
 }
 
 function ago(ts) {
@@ -2477,7 +2495,7 @@ function rebootFreqOf(dev) {
 
 function rebootRow(dev, enabled) {
   const draft = !enabled && rbDraft && rbDraft.mac === dev.mac;
-  const nameStr = dev.hostname || dev.mac;
+  const nameStr = deviceOptionLabel(dev, deviceCache);
   const tr = document.createElement('tr');
   const name = document.createElement('td');
   name.textContent = nameStr;
@@ -2753,7 +2771,7 @@ function ledRow(dev, enabled, list) {
   const onInput = document.createElement('input');
   onInput.type = 'time';
   onInput.value = enabled ? (dev.led_on_at || '') : (draft ? (ledDraft.on || '') : '');
-  onInput.setAttribute('aria-label', (dev.hostname || dev.mac) + ' 的定时开灯');
+  onInput.setAttribute('aria-label', deviceOptionLabel(dev, list || deviceCache) + ' 的定时开灯');
   onInput.addEventListener('input', () => { if (ledDraft && ledDraft.mac === dev.mac) ledDraft.on = onInput.value; });
   onTd.appendChild(onInput);
   tr.appendChild(onTd);
@@ -2762,7 +2780,7 @@ function ledRow(dev, enabled, list) {
   const offInput = document.createElement('input');
   offInput.type = 'time';
   offInput.value = enabled ? (dev.led_off_at || '') : (draft ? (ledDraft.off || '') : '');
-  offInput.setAttribute('aria-label', (dev.hostname || dev.mac) + ' 的定时关灯');
+  offInput.setAttribute('aria-label', deviceOptionLabel(dev, list || deviceCache) + ' 的定时关灯');
   offInput.addEventListener('input', () => { if (ledDraft && ledDraft.mac === dev.mac) ledDraft.off = offInput.value; });
   offTd.appendChild(offInput);
   tr.appendChild(offTd);
@@ -2801,7 +2819,7 @@ function ledRow(dev, enabled, list) {
     del.textContent = '删除';
     del.className = 'ghost';
     del.addEventListener('click', async () => {
-      if (!confirm('清除 ' + (dev.hostname || dev.mac) + ' 的 LED 定时？')) return;
+      if (!confirm('清除 ' + deviceOptionLabel(dev, deviceCache) + ' 的 LED 定时？')) return;
       saveLEDRow(dev, '', '');
     });
     ops.appendChild(del);
@@ -2821,7 +2839,7 @@ async function saveLEDRow(dev, onAt, offAt) {
     await api('PUT', '/api/v1/devices/' + encodeURIComponent(dev.mac) + '/led-schedule',
       { on_at: onAt, off_at: offAt });
     ledDraft = null; // 保存成功后草稿行转正，不再保留
-    sayLED((dev.hostname || dev.mac)
+    sayLED(deviceOptionLabel(dev, deviceCache)
       + (onAt || offAt
         ? ' 的 LED 定时已更新：开 ' + (onAt || '—') + ' / 关 ' + (offAt || '—')
         : ' 的 LED 定时已清除'), 'ok');
@@ -2842,7 +2860,7 @@ async function ledSwitch(state) {
   try {
     const res = await api('POST', '/api/v1/devices/' + encodeURIComponent(ledDeviceMac) + '/actions',
       { type: 'led_set', args: { state } });
-    sayLED((apNames[ledDeviceMac] || ledDeviceMac) + ' 已下发'
+    sayLED(deviceLabel(ledDeviceMac) + ' 已下发'
       + (state === 'on' ? '开灯' : '关灯') + '（' + res.id + '），等待 AP 下次心跳执行', 'ok');
     await refresh();
   } catch (e) {
@@ -3354,7 +3372,7 @@ function renderClients(payload) {
       ? '↓' + (c.rx_rate_mbps || '-') + ' / ↑' + (c.tx_rate_mbps || '-') + ' Mbps'
       : '–';
     cell(tr, rate, 'mono');
-    cell(tr, apNames[c.ap_mac] || c.ap_mac, 'mono');
+    cell(tr, deviceLabel(c.ap_mac), 'mono');
     cell(tr, c.online ? duration(c.connected_seconds) : '离线');
 
     const ops = document.createElement('td');
@@ -3420,7 +3438,7 @@ function openClientDetail(mac) {
     item.appendChild(v);
     facts.appendChild(item);
   };
-  const apName = (m) => apNames[m] || m;
+  const apName = (m) => deviceLabel(m);
   fact('当前接入 AP', c.online ? apName(c.ap_mac) : '离线', true);
   fact('当前接入时间', c.online ? when(c.connected_since) : '–');
   fact('本次在线时长', c.online ? duration(c.connected_seconds) : '–');
@@ -3864,7 +3882,7 @@ function bandLabel(band) {
 }
 
 function seriesName(point) {
-  const ap = apNames[point.ap_mac] || point.ap_mac;
+  const ap = deviceLabel(point.ap_mac);
   return ap + ' · ' + bandLabel(point.band) + ' ' + (point.radio || '');
 }
 
@@ -3887,12 +3905,12 @@ async function loadTelemetry() {
       byAP.get(p.ap_mac).push({ x: p.ts, y: p.clients });
     }
     drawChart($('chart-counts'), [...byAP.entries()].map(([mac, points], i) => ({
-      name: apNames[mac] || mac,
+      name: deviceLabel(mac),
       color: PALETTE[i % PALETTE.length],
       points: points.sort((a, b) => a.x - b.x),
     })), { min: 0, integer: true });
     legend($('legend-counts') || document.createElement('div'),
-      [...byAP.keys()].map(m => apNames[m] || m));
+      [...byAP.keys()].map(m => deviceLabel(m)));
 
     const byRadio = new Map();
     for (const p of radios.points || []) {
@@ -4190,7 +4208,7 @@ function renderRadioTable(list) {
       tr.style.opacity = '.5';
       tr.title = 'AP 离线，以下为其最后一次采样（' + ago(p.ts) + '）';
     }
-    cell(tr, (dev && dev.hostname) || p.ap_mac, 'mono');
+    cell(tr, dev ? deviceOptionLabel(dev, deviceCache) : p.ap_mac, 'mono');
     cell(tr, p.radio, 'mono');
     cell(tr, bandLabel(p.band));
 
@@ -4268,7 +4286,7 @@ function openRFLiveEditor(p) {
 
   host.innerHTML = '';
   const h = document.createElement('h3');
-  h.textContent = (dev.hostname || dev.mac) + ' · ' + p.radio + '（' + bandLabel(band) + '）';
+  h.textContent = deviceOptionLabel(dev, deviceCache) + ' · ' + p.radio + '（' + bandLabel(band) + '）';
   host.appendChild(h);
 
   const msg = document.createElement('div');
@@ -4407,7 +4425,7 @@ function openRFLiveEditor(p) {
 
   const note = document.createElement('p');
   note.className = 'hint';
-  note.textContent = '只覆盖这台 AP 的这个 radio，不改共享模板；“清除覆盖”恢复为模板值。保存后需在设备页重新下发才生效。';
+  note.textContent = '只覆盖这台 AP 的这个 radio，不改共享模板；“清除覆盖”恢复为模板值。保存后立即下发无线配置，不改动网络。';
   host.appendChild(note);
 
   const actions = document.createElement('div');
@@ -4438,10 +4456,10 @@ function openRFLiveEditor(p) {
       }]),
     };
     try {
-      await api('PUT', '/api/v1/devices/' + encodeURIComponent(dev.mac) + '/radios', body);
+      const res = await api('PUT', '/api/v1/devices/' + encodeURIComponent(dev.mac) + '/radios', body);
       closeRFLiveEditor();
       await refresh();
-      sayRFLive(dev.mac + ' · ' + p.radio + ' 覆盖已保存；重新下发后生效', 'ok');
+      sayRFLive(dev.mac + ' · ' + p.radio + ' 覆盖已保存' + wirelessPushNote(res), 'ok');
     } catch (e) {
       if (!noteUnauthorized(e)) say('保存失败：' + e.message, 'err');
     }
@@ -4454,10 +4472,10 @@ function openRFLiveEditor(p) {
   clearBtn.addEventListener('click', async () => {
     const body = { radios: rfDeviceOverrides(dev).filter(o => o.index !== idx) };
     try {
-      await api('PUT', '/api/v1/devices/' + encodeURIComponent(dev.mac) + '/radios', body);
+      const res = await api('PUT', '/api/v1/devices/' + encodeURIComponent(dev.mac) + '/radios', body);
       closeRFLiveEditor();
       await refresh();
-      sayRFLive(dev.mac + ' · ' + p.radio + ' 已恢复模板值', 'ok');
+      sayRFLive(dev.mac + ' · ' + p.radio + ' 已恢复模板值' + wirelessPushNote(res), 'ok');
     } catch (e) {
       if (!noteUnauthorized(e)) say('清除失败：' + e.message, 'err');
     }
@@ -5303,7 +5321,7 @@ function renderPortStates(list) {
   for (const p of list) {
     const tr = document.createElement('tr');
     if (!p.up) tr.style.opacity = '.55';
-    cell(tr, apNames[p.ap_mac] || p.ap_mac, 'mono');
+    cell(tr, deviceLabel(p.ap_mac), 'mono');
     cell(tr, p.name, 'mono');
     const st = document.createElement('td');
     const badge = document.createElement('span');
@@ -6480,7 +6498,7 @@ $('wl-repush').addEventListener('click', async () => {
     if (!wlDeviceMac) throw new Error('请选择设备');
     if (!(await confirmAddressMove(wlDeviceMac))) { sayWL('已取消下发'); return; }
     const res = await api('POST', '/api/v1/devices/' + encodeURIComponent(wlDeviceMac) + '/repush');
-    sayWL((apNames[wlDeviceMac] || wlDeviceMac) + ' 已重新下发，rev ' + res.rev, 'ok');
+    sayWL(deviceLabel(wlDeviceMac) + ' 已重新下发，rev ' + res.rev, 'ok');
   } catch (e) {
     if (!noteUnauthorized(e)) sayWL(e.message, 'err');
   }
@@ -6601,11 +6619,22 @@ $('roam-save').addEventListener('click', async () => {
   if (!tpl) return sayRoam(templates.length ? '请先选择模板' : '当前没有模板', 'err');
   try {
     const policy = $('roam-enabled').checked ? collectRoamPolicy() : null;
-    await api('PUT', '/api/v1/templates/' + encodeURIComponent(tpl.id) + '/steer-policy',
+    const res = await api('PUT', '/api/v1/templates/' + encodeURIComponent(tpl.id) + '/steer-policy',
       { policy });
+    const push = res && res.wireless_push;
+    let tail = '，已立即下发无线配置（AP 下次心跳应用，网络配置未改动）';
+    if (push) {
+      if (push.failed && push.failed.length) {
+        tail = '；' + push.failed.length + ' 台设备下发失败，可稍后重新下发';
+      } else if (push.pushed) {
+        tail = '，已立即下发到 ' + push.pushed + ' 台设备（AP 下次心跳应用，网络配置未改动）';
+      } else {
+        tail = '；当前没有已采纳设备使用该模板';
+      }
+    }
     sayRoam(policy
-      ? '模板 ' + tpl.id + ' 的漫游策略已保存；已采纳设备需重新下发后生效'
-      : '已关闭模板 ' + tpl.id + ' 的漫游策略；重新下发后 AP 恢复被动模式', 'ok');
+      ? '模板 ' + tpl.id + ' 的漫游策略已保存' + tail
+      : '已关闭模板 ' + tpl.id + ' 的漫游策略' + tail + '，AP 将恢复被动模式', 'ok');
     await loadTemplates();
     renderRoamPolicy();
   } catch (e) {
@@ -6720,7 +6749,7 @@ function renderFwLog() {
     time.textContent = when(ev.ts);
     line.appendChild(time);
     line.appendChild(document.createTextNode(
-      '  ' + (apNames[ev.mac] || ev.mac)
+      '  ' + deviceLabel(ev.mac)
       + (version ? '  升级 ' + version : '')
       + '  '));
     const verdict = document.createElement('span');
@@ -6868,7 +6897,7 @@ async function applyFirmwareTarget(mac, version) {
     const res = await api('POST', '/api/v1/devices/' + encodeURIComponent(mac) + '/firmware', { version });
     const idx = deviceCache.findIndex(x => x.mac === mac);
     if (idx >= 0) deviceCache[idx] = res;
-    sayFWDev((apNames[mac] || mac) + (version
+    sayFWDev(deviceLabel(mac) + (version
       ? ' 目标已设为 ' + version + '，等待 AP 下次 Hello'
       : ' 已清除升级目标'), 'ok');
     renderFirmwareDevices();

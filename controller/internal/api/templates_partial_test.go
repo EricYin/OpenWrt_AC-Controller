@@ -1,11 +1,15 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 
 	"github.com/naoki66/ac-controller/controller/internal/provision"
+	"github.com/naoki66/ac-controller/shared/bundle"
 	"github.com/naoki66/ac-controller/shared/model"
+	"github.com/naoki66/ac-controller/shared/render"
 )
 
 // The SSID page and the ports page edit the same shared template from two
@@ -119,6 +123,64 @@ func TestTemplateSteerPolicyPartialUpdate(t *testing.T) {
 	}
 	if stored.SteerPolicy != nil {
 		t.Errorf("policy not cleared: %+v", stored.SteerPolicy)
+	}
+}
+
+// Saving a roaming policy applies it at once: every adopted device on the
+// template gets a new revision whose bundle has no network file, so the change
+// cannot move an address or reload layer 2.
+func TestSteerPolicyPushesWirelessOnly(t *testing.T) {
+	f := newFixture(t)
+	f.adopt()
+	ctx := context.Background()
+
+	resp := f.do(http.MethodPut, "/api/v1/templates/default/steer-policy", map[string]any{
+		"policy": map[string]any{"btm_snr": -70, "btm_consecutive": 3},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("put steer-policy status = %d", resp.StatusCode)
+	}
+	var body struct {
+		WirelessPush *struct {
+			Pushed int `json:"pushed"`
+			Failed []struct {
+				MAC   string `json:"mac"`
+				Error string `json:"error"`
+			} `json:"failed"`
+		} `json:"wireless_push"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	resp.Body.Close()
+	if body.WirelessPush == nil || body.WirelessPush.Pushed != 1 || len(body.WirelessPush.Failed) != 0 {
+		t.Fatalf("wireless push = %+v, want one device", body.WirelessPush)
+	}
+
+	d, err := f.store.GetDevice(ctx, testMAC)
+	if err != nil {
+		t.Fatalf("get device: %v", err)
+	}
+	if d.ConfigRev != 2 {
+		t.Errorf("config rev = %d, want 2", d.ConfigRev)
+	}
+
+	_, blob, err := f.store.LatestPackage(ctx, testMAC)
+	if err != nil {
+		t.Fatalf("latest package: %v", err)
+	}
+	_, files, err := bundle.Extract(blob, f.key.Public)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if _, ok := files[render.FileNetwork]; ok {
+		t.Error("wireless-only bundle contains a network file")
+	}
+	if _, ok := files[render.FileWireless]; !ok {
+		t.Error("wireless-only bundle has no wireless file")
+	}
+	if _, ok := files[render.FileSteerPolicy]; !ok {
+		t.Error("wireless-only bundle has no steer-policy file")
 	}
 }
 

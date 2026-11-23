@@ -18,6 +18,7 @@ import (
 	"github.com/naoki66/ac-controller/controller/internal/store"
 	"github.com/naoki66/ac-controller/shared/bundle"
 	"github.com/naoki66/ac-controller/shared/model"
+	"github.com/naoki66/ac-controller/shared/render"
 )
 
 const testMAC = "8c:de:52:11:22:33"
@@ -283,6 +284,63 @@ func TestRepushIncrementsRevision(t *testing.T) {
 	}](t, f.do(http.MethodGet, "/api/v1/devices/"+testMAC+"/packages", nil))
 	if len(list.Packages) != 2 {
 		t.Errorf("package count = %d, want 2", len(list.Packages))
+	}
+}
+
+// Saving a per-radio override must take effect without a manual repush. The
+// generated bundle carries no network file, so applying it cannot move the AP's
+// address or reload layer 2.
+func TestRadioOverridesPushWirelessOnly(t *testing.T) {
+	f := newFixture(t)
+	f.adopt()
+	ctx := context.Background()
+
+	resp := f.do(http.MethodPut, "/api/v1/devices/"+testMAC+"/radios", map[string]any{
+		"radios": []map[string]any{{
+			"index": 0, "channel": "36", "htmode": "HE80", "txpower": 20, "country": "CN",
+		}},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set radios status = %d", resp.StatusCode)
+	}
+	var body struct {
+		WirelessPush *struct {
+			Pushed int `json:"pushed"`
+			Failed []struct {
+				MAC   string `json:"mac"`
+				Error string `json:"error"`
+			} `json:"failed"`
+		} `json:"wireless_push"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	resp.Body.Close()
+	if body.WirelessPush == nil || body.WirelessPush.Pushed != 1 || len(body.WirelessPush.Failed) != 0 {
+		t.Fatalf("wireless push = %+v, want one device", body.WirelessPush)
+	}
+
+	d, err := f.store.GetDevice(ctx, testMAC)
+	if err != nil {
+		t.Fatalf("get device: %v", err)
+	}
+	if d.ConfigRev != 2 {
+		t.Errorf("config rev = %d, want 2", d.ConfigRev)
+	}
+
+	_, blob, err := f.store.LatestPackage(ctx, testMAC)
+	if err != nil {
+		t.Fatalf("latest package: %v", err)
+	}
+	_, files, err := bundle.Extract(blob, f.key.Public)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if _, ok := files[render.FileNetwork]; ok {
+		t.Error("wireless-only bundle contains a network file")
+	}
+	if !strings.Contains(string(files[render.FileWireless]), "channel '36'") {
+		t.Errorf("wireless file lacks the new channel:\n%s", files[render.FileWireless])
 	}
 }
 

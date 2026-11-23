@@ -102,6 +102,113 @@ func (s *Service) RepushWith(ctx context.Context, mac string, popts PushOptions)
 	return s.AssignTemplateWith(ctx, mac, device.TemplateID, popts)
 }
 
+// RepushWireless regenerates only the wireless half of a device's package:
+// wireless, the steering daemon, the steering policy and the 802.11k neighbour
+// list. The bundle deliberately carries no network file, so the agent cannot
+// write or reload layer-2 configuration. A roaming tweak therefore applies on
+// the next heartbeat without any risk of an address move or a dropped link.
+func (s *Service) RepushWireless(ctx context.Context, mac string) (Result, error) {
+	device, err := s.Store.GetDevice(ctx, mac)
+	if err != nil {
+		return Result{}, err
+	}
+	if device.State != store.StateAdopted {
+		return Result{}, ErrNotAdopted
+	}
+	if device.TemplateID == "" {
+		return Result{}, ErrNoTemplate
+	}
+
+	tpl, err := s.Store.GetTemplate(ctx, device.TemplateID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return Result{}, fmt.Errorf("%w: %q", ErrTemplateNotFound, device.TemplateID)
+		}
+		return Result{}, err
+	}
+
+	// Per-unit radio values (channel/power/mode) live outside the shared
+	// template and change what the wireless file must contain.
+	if device.RadioOverrides != "" {
+		var ro model.DeviceRadioOverrides
+		if err := json.Unmarshal([]byte(device.RadioOverrides), &ro); err != nil {
+			return Result{}, fmt.Errorf("provision: device %s radio_overrides: %w", device.MAC, err)
+		}
+		tpl = tpl.WithDeviceRadios(ro)
+	}
+	if err := tpl.Validate(); err != nil {
+		return Result{}, fmt.Errorf("provision: template %q is invalid: %w", device.TemplateID, err)
+	}
+
+	wireless, err := render.Wireless(tpl, render.Options{Prefix: render.ACPrefix})
+	if err != nil {
+		return Result{}, fmt.Errorf("provision: render wireless: %w", err)
+	}
+
+	files := map[string][]byte{render.FileWireless: wireless}
+	if steering := render.Steering(tpl); steering != nil {
+		files[render.FileSteering] = steering
+	}
+	if policy := render.SteerPolicy(tpl); policy != nil {
+		files[render.FileSteerPolicy] = policy
+	}
+	peers, err := s.Store.AllNeighbors(ctx)
+	if err != nil {
+		return Result{}, fmt.Errorf("provision: read neighbours: %w", err)
+	}
+	entries := make([]render.NeighborEntry, 0, len(peers))
+	for _, p := range peers {
+		entries = append(entries, render.NeighborEntry{
+			APMAC: p.APMAC, Ifname: p.Ifname, BSSID: p.BSSID, SSID: p.SSID, Report: p.Report,
+		})
+	}
+	if nb := render.Neighbors(entries, device.MAC); nb != nil {
+		files[render.FileNeighbors] = nb
+	}
+
+	rev := device.ConfigRev + 1
+	now := time.Now
+	if s.Now != nil {
+		now = s.Now
+	}
+	var models []string
+	if device.Model != "" {
+		models = []string{device.Model}
+	}
+	manifest, blob, err := bundle.Build(bundle.Input{
+		Rev:         rev,
+		DeviceMAC:   device.MAC,
+		ACID:        s.ACID,
+		TemplateID:  device.TemplateID,
+		Models:      models,
+		GeneratedAt: now(),
+		Files:       files,
+	}, s.Key.Private)
+	if err != nil {
+		return Result{}, err
+	}
+
+	sum := sha256.Sum256(blob)
+	digest := hex.EncodeToString(sum[:])
+	if err := s.Store.CommitAdoption(ctx, device, device.TemplateID, rev, digest, blob); err != nil {
+		return Result{}, err
+	}
+	if s.PackageHistory > 0 {
+		_ = s.Store.TrimPackages(ctx, device.MAC, s.PackageHistory)
+	}
+	s.Store.LogEvent(ctx, "wireless", device.MAC,
+		fmt.Sprintf("wireless-only repush as rev %d (network untouched)", rev))
+
+	return Result{
+		MAC:      device.MAC,
+		Rev:      rev,
+		SHA256:   digest,
+		Size:     len(blob),
+		Template: device.TemplateID,
+		Manifest: manifest,
+	}, nil
+}
+
 // AssignTemplate moves an adopted device onto another template and generates
 // the next revision. Adoption state is preserved: the device stays managed,
 // only the configuration it should run changes.

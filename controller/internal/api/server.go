@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -727,7 +728,20 @@ func (s *Server) handleSetDeviceRadios(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	// Radio overrides only affect the wireless file. Push them now with a
+	// bundle that carries no network file, so the operator does not have to
+	// repush (and risk an address move) just to change a channel or power.
+	push := s.pushWirelessToDevice(r.Context(), d)
+	if push != nil {
+		if d, err = s.Store.GetDevice(r.Context(), mac); err != nil {
+			writeStoreError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		store.Device
+		WirelessPush *wirelessPushSummary `json:"wireless_push,omitempty"`
+	}{Device: d, WirelessPush: push})
 }
 
 func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
@@ -1124,7 +1138,66 @@ func (s *Server) handleTemplateSteerPolicy(w http.ResponseWriter, r *http.Reques
 			"template %s steer-policy btm_snr=%d consecutive=%d",
 			t.ID, req.Policy.BtmSNR, req.Policy.BtmConsecutive))
 	}
-	writeJSON(w, http.StatusOK, t)
+	// Roaming thresholds only affect the wireless side. Push them now, with a
+	// bundle that carries no network file, so the operator does not have to
+	// repush (and risk an address move) just to change steering behaviour.
+	push := s.pushWirelessToTemplate(r.Context(), t.ID)
+	writeJSON(w, http.StatusOK, struct {
+		model.Template
+		WirelessPush *wirelessPushSummary `json:"wireless_push,omitempty"`
+	}{Template: t, WirelessPush: push})
+}
+
+// wirelessPushFailure names one AP that could not take the new wireless
+// revision. The policy itself is already saved, so a failure here only means
+// that AP keeps the previous steering values until the next push succeeds.
+type wirelessPushFailure struct {
+	MAC   string `json:"mac"`
+	Error string `json:"error"`
+}
+
+type wirelessPushSummary struct {
+	Pushed int                   `json:"pushed"`
+	Failed []wirelessPushFailure `json:"failed,omitempty"`
+}
+
+// pushWirelessToDevice generates a wireless-only revision for one adopted AP.
+func (s *Server) pushWirelessToDevice(ctx context.Context, d store.Device) *wirelessPushSummary {
+	if d.State != store.StateAdopted {
+		return nil
+	}
+	sum := &wirelessPushSummary{}
+	if _, err := s.Provision.RepushWireless(ctx, d.MAC); err != nil {
+		sum.Failed = []wirelessPushFailure{{MAC: d.MAC, Error: err.Error()}}
+		s.Log.Warn("wireless push failed", "mac", d.MAC, "err", err)
+		return sum
+	}
+	sum.Pushed = 1
+	return sum
+}
+
+// pushWirelessToTemplate generates a wireless-only revision for every adopted
+// device using this template. Network configuration is not rendered, so a push
+// can never move an address or reload layer 2.
+func (s *Server) pushWirelessToTemplate(ctx context.Context, id string) *wirelessPushSummary {
+	sum := &wirelessPushSummary{}
+	devices, err := s.Store.ListDevices(ctx)
+	if err != nil {
+		s.Log.Warn("wireless push: list devices failed", "template", id, "err", err)
+		return sum
+	}
+	for _, d := range devices {
+		if d.State != store.StateAdopted || d.TemplateID != id {
+			continue
+		}
+		if _, err := s.Provision.RepushWireless(ctx, d.MAC); err != nil {
+			sum.Failed = append(sum.Failed, wirelessPushFailure{MAC: d.MAC, Error: err.Error()})
+			s.Log.Warn("wireless push failed", "mac", d.MAC, "template", id, "err", err)
+			continue
+		}
+		sum.Pushed++
+	}
+	return sum
 }
 
 // pathMAC normalises the {mac} path value, answering 400 when it is malformed.
