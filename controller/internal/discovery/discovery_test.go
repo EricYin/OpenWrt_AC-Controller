@@ -14,7 +14,10 @@ import (
 
 // newTestListener starts a real listener on an ephemeral loopback port with a
 // real UDP socket, so the tests exercise the actual wire handling.
-func newTestListener(t *testing.T) *Listener {
+//
+// configure runs before the serve goroutine starts: a test that changes a field
+// afterwards races the read loop, which the race detector rightly flags.
+func newTestListener(t *testing.T, configure ...func(*Listener)) *Listener {
 	t.Helper()
 
 	ctx := context.Background()
@@ -24,6 +27,9 @@ func newTestListener(t *testing.T) *Listener {
 		HTTPPort:       8080,
 		SecretRequired: true,
 		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	for _, fn := range configure {
+		fn(l)
 	}
 
 	uc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -121,8 +127,7 @@ func TestOfferCarriesRegistrationEndpoint(t *testing.T) {
 
 // A controller without AC_SHARED_SECRET must not tell the AP to send one.
 func TestSecretNotRequiredWhenUnset(t *testing.T) {
-	l := newTestListener(t)
-	l.SecretRequired = false
+	l := newTestListener(t, func(l *Listener) { l.SecretRequired = false })
 
 	offer, err := exchange(t, l, mustDiscover(t, "8c:de:52:11:22:33", "ap250", "20261026"))
 	if err != nil {
