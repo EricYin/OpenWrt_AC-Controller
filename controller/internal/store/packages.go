@@ -80,7 +80,7 @@ func (s *Store) LatestPackage(ctx context.Context, mac string) (Package, []byte,
 	const q = `
 SELECT rev, created_at, sha256, size, blob
 FROM packages WHERE mac = ? ORDER BY rev DESC LIMIT 1`
-	return s.scanPackage(s.db.QueryRowContext(ctx, q, mac))
+	return s.scanPackage(s.read().QueryRowContext(ctx, q, mac))
 }
 
 // PackageByRev returns a specific revision.
@@ -88,7 +88,7 @@ func (s *Store) PackageByRev(ctx context.Context, mac string, rev int) (Package,
 	const q = `
 SELECT rev, created_at, sha256, size, blob
 FROM packages WHERE mac = ? AND rev = ?`
-	return s.scanPackage(s.db.QueryRowContext(ctx, q, mac, rev))
+	return s.scanPackage(s.read().QueryRowContext(ctx, q, mac, rev))
 }
 
 func (s *Store) scanPackage(row *sql.Row) (Package, []byte, error) {
@@ -111,7 +111,7 @@ func (s *Store) ListPackages(ctx context.Context, mac string) ([]Package, error)
 	const q = `
 SELECT rev, created_at, sha256, size
 FROM packages WHERE mac = ? ORDER BY rev DESC`
-	rows, err := s.db.QueryContext(ctx, q, mac)
+	rows, err := s.read().QueryContext(ctx, q, mac)
 	if err != nil {
 		return nil, err
 	}

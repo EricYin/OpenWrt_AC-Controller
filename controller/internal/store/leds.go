@@ -55,7 +55,7 @@ func (s *Store) DueLEDSchedules(ctx context.Context, now, onlineAfter int64, lim
 	if limit <= 0 || limit > 128 {
 		limit = 32
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.read().QueryContext(ctx,
 		`SELECT `+deviceColumns+` FROM devices
 		  WHERE state = ? AND (
 		    (led_on_next_at > 0 AND led_on_next_at <= ?) OR
@@ -110,7 +110,7 @@ func (s *Store) ListLEDWindows(ctx context.Context, now, onlineAfter int64, limi
 	if limit <= 0 || limit > 128 {
 		limit = 32
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.read().QueryContext(ctx,
 		`SELECT `+deviceColumns+` FROM devices
 		  WHERE state = ? AND last_seen >= ?
 		    AND led_on_at <> '' AND led_off_at <> ''
@@ -166,7 +166,7 @@ func (s *Store) ResetLEDRepair(ctx context.Context, mac string) error {
 // to replace commands that were lost in transit.
 func (s *Store) HasFreshAction(ctx context.Context, mac, typ string, now int64) (bool, error) {
 	var n int
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.read().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM device_actions
 		  WHERE mac = ? AND type = ? AND state = ? AND (
 		    (dispatched_at > 0 AND dispatched_at >= ?) OR

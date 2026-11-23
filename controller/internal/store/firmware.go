@@ -57,7 +57,7 @@ func (s *Store) SaveFirmware(ctx context.Context, fw Firmware, blob []byte) erro
 
 // ListFirmwares returns every image without its blob.
 func (s *Store) ListFirmwares(ctx context.Context) ([]Firmware, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.read().QueryContext(ctx,
 		`SELECT model, version, filename, size, sha256, uploaded_at
 		 FROM firmwares ORDER BY model, version DESC`)
 	if err != nil {
@@ -82,7 +82,7 @@ func (s *Store) GetFirmware(ctx context.Context, model, version string) (Firmwar
 		fw   Firmware
 		blob []byte
 	)
-	err := s.db.QueryRowContext(ctx,
+	err := s.read().QueryRowContext(ctx,
 		`SELECT model, version, filename, size, sha256, uploaded_at, blob
 		 FROM firmwares WHERE model = ? AND version = ?`, model, version).
 		Scan(&fw.Model, &fw.Version, &fw.Filename, &fw.Size, &fw.SHA256, &fw.UploadedAt, &blob)
@@ -136,7 +136,7 @@ func (s *Store) SetFirmwareTarget(ctx context.Context, mac, version string) erro
 // a three-minute download must not produce a hundred identical rows.
 func (s *Store) RecordFirmware(ctx context.Context, mac, state, message string) error {
 	var old string
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.read().QueryRowContext(ctx,
 		`SELECT fw_state FROM devices WHERE mac = ?`, mac).Scan(&old); err != nil &&
 		!errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("read firmware state %s: %w", mac, err)
@@ -152,7 +152,7 @@ func (s *Store) RecordFirmware(ctx context.Context, mac, state, message string) 
 	}
 	if state != old {
 		var target string
-		_ = s.db.QueryRowContext(ctx,
+		_ = s.read().QueryRowContext(ctx,
 			`SELECT fw_target FROM devices WHERE mac = ?`, mac).Scan(&target)
 		detail := strings.TrimSpace(message)
 		switch {

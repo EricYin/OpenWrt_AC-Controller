@@ -96,7 +96,7 @@ func (s *Store) PendingActions(ctx context.Context, mac string, limit int) ([]Ac
 		return nil, fmt.Errorf("store: expire actions: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.read().QueryContext(ctx,
 		`SELECT id, mac, type, args, state, message, created_at, dispatched_at, finished_at
 		   FROM device_actions WHERE mac = ? AND state = ?
 		  ORDER BY created_at LIMIT ?`,
@@ -158,7 +158,7 @@ func (s *Store) GetAction(ctx context.Context, mac, id string) (Action, error) {
 		a    Action
 		args string
 	)
-	err := s.db.QueryRowContext(ctx,
+	err := s.read().QueryRowContext(ctx,
 		`SELECT id, mac, type, args, state, message, created_at, dispatched_at, finished_at
 		   FROM device_actions WHERE id = ? AND mac = ?`, id, mac).
 		Scan(&a.ID, &a.MAC, &a.Type, &args, &a.State, &a.Message,
@@ -182,7 +182,7 @@ func (s *Store) ListActions(ctx context.Context, mac string, limit int) ([]Actio
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.read().QueryContext(ctx,
 		`SELECT id, mac, type, args, state, message, created_at, dispatched_at, finished_at
 		   FROM device_actions WHERE mac = ?
 		  ORDER BY created_at DESC LIMIT ?`,

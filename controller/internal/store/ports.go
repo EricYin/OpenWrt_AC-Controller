@@ -66,7 +66,7 @@ func (s *Store) ReplacePortsForAP(ctx context.Context, apMAC string, ports []Por
 func (s *Store) LatestPorts(ctx context.Context) ([]PortState, error) {
 	const q = `SELECT ap_mac, name, mac, up, speed_mbps, duplex, mtu, updated_at
 FROM port_state ORDER BY ap_mac, name`
-	rows, err := s.db.QueryContext(ctx, q)
+	rows, err := s.read().QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}

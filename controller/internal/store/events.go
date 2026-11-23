@@ -37,7 +37,7 @@ func (s *Store) ListEvents(ctx context.Context, limit, offset int, kind string) 
 	}
 	q += ` ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.read().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
 	}
@@ -58,6 +58,6 @@ func (s *Store) ListEvents(ctx context.Context, limit, offset int, kind string) 
 // has a primary key and the system page only needs the total.
 func (s *Store) CountEvents(ctx context.Context) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&n)
+	err := s.read().QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&n)
 	return n, err
 }

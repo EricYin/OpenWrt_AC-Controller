@@ -69,7 +69,7 @@ func (s *Store) ReplaceNeighborsForAP(ctx context.Context, apMAC string, list []
 // package rendering is deterministic. A pending device is excluded: it has no
 // business appearing in another AP's neighbour reports before it is trusted.
 func (s *Store) AllNeighbors(ctx context.Context) ([]BSSNeighbor, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.read().QueryContext(ctx, `
 		SELECT n.ap_mac, n.ifname, n.bssid, n.ssid, n.report
 		FROM bss_neighbors n
 		JOIN devices d ON d.mac = n.ap_mac

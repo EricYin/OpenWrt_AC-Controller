@@ -32,7 +32,7 @@ func (s *Store) DueReboots(ctx context.Context, now, onlineAfter int64, limit in
 	if limit <= 0 || limit > 128 {
 		limit = 32
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.read().QueryContext(ctx,
 		`SELECT `+deviceColumns+` FROM devices
 	  WHERE state = ? AND reboot_period_days > 0 AND reboot_next_at > 0
 	    AND reboot_next_at <= ? AND last_seen >= ?
@@ -76,7 +76,7 @@ func (s *Store) AdvanceRebootSchedule(ctx context.Context, mac string, nextAt in
 // the device, so the scheduler does not stack duplicates.
 func (s *Store) HasPendingAction(ctx context.Context, mac, typ string) (bool, error) {
 	var n int
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.read().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM device_actions WHERE mac = ? AND type = ? AND state = ?`,
 		mac, typ, ActionPending).Scan(&n); err != nil {
 		return false, fmt.Errorf("check pending action %s: %w", mac, err)

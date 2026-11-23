@@ -78,7 +78,7 @@ SELECT g.id, g.name, g.template_id, g.created_at, g.updated_at,
        (SELECT COUNT(*) FROM devices d WHERE d.group_id = g.id)
 FROM ap_groups g WHERE g.id = ?`
 	var g APGroup
-	err := s.db.QueryRowContext(ctx, q, id).Scan(
+	err := s.read().QueryRowContext(ctx, q, id).Scan(
 		&g.ID, &g.Name, &g.TemplateID, &g.CreatedAt, &g.UpdatedAt, &g.DeviceCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return APGroup{}, ErrNotFound
@@ -95,7 +95,7 @@ func (s *Store) ListGroups(ctx context.Context) ([]APGroup, error) {
 SELECT g.id, g.name, g.template_id, g.created_at, g.updated_at,
        (SELECT COUNT(*) FROM devices d WHERE d.group_id = g.id)
 FROM ap_groups g ORDER BY g.name, g.id`
-	rows, err := s.db.QueryContext(ctx, q)
+	rows, err := s.read().QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func (s *Store) DeleteGroup(ctx context.Context, id string) error {
 // CountGroupDevices reports how many devices currently reference the group.
 func (s *Store) CountGroupDevices(ctx context.Context, id string) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx,
+	err := s.read().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM devices WHERE group_id = ?`, id).Scan(&n)
 	return n, err
 }

@@ -27,7 +27,7 @@ func (s *Store) GetClientMeta(ctx context.Context, mac string) (ClientMeta, erro
 		m       ClientMeta
 		tracked int
 	)
-	err := s.db.QueryRowContext(ctx, `
+	err := s.read().QueryRowContext(ctx, `
 		SELECT mac, alias, note, tracked, bind_ssid, bind_ap_mac, updated_at
 		FROM client_meta WHERE mac = ?`, mac).
 		Scan(&m.MAC, &m.Alias, &m.Note, &tracked, &m.BindSSID, &m.BindAPMAC, &m.UpdatedAt)
@@ -69,7 +69,7 @@ func (s *Store) UpsertClientMeta(ctx context.Context, m ClientMeta) error {
 // (and optionally one AP). Disabled/empty bindings are excluded because the
 // agent must not receive intent it cannot act on.
 func (s *Store) ListClientBindings(ctx context.Context) ([]ClientMeta, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.read().QueryContext(ctx, `
 		SELECT mac, bind_ssid, bind_ap_mac
 		FROM client_meta
 		WHERE bind_ssid <> ''

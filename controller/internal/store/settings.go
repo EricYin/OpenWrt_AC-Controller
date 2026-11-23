@@ -52,7 +52,7 @@ VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING`,
 func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {
 	const q = `SELECT value FROM settings WHERE key = ?`
 	var value string
-	err := s.db.QueryRowContext(ctx, q, key).Scan(&value)
+	err := s.read().QueryRowContext(ctx, q, key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}

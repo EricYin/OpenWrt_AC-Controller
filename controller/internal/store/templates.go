@@ -37,7 +37,7 @@ ON CONFLICT(id) DO UPDATE SET
 func (s *Store) GetTemplate(ctx context.Context, id string) (model.Template, error) {
 	const q = `SELECT json FROM templates WHERE id = ?`
 	var body string
-	err := s.db.QueryRowContext(ctx, q, id).Scan(&body)
+	err := s.read().QueryRowContext(ctx, q, id).Scan(&body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Template{}, ErrNotFound
 	}
@@ -54,7 +54,7 @@ func (s *Store) GetTemplate(ctx context.Context, id string) (model.Template, err
 
 // ListTemplates returns every template ordered by id.
 func (s *Store) ListTemplates(ctx context.Context) ([]model.Template, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT json FROM templates ORDER BY id`)
+	rows, err := s.read().QueryContext(ctx, `SELECT json FROM templates ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,7 @@ func (s *Store) ListTemplates(ctx context.Context) ([]model.Template, error) {
 // be seeded on first boot.
 func (s *Store) CountTemplates(ctx context.Context) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM templates`).Scan(&n)
+	err := s.read().QueryRowContext(ctx, `SELECT COUNT(*) FROM templates`).Scan(&n)
 	return n, err
 }
 
@@ -96,7 +96,7 @@ type TemplateRef struct {
 // response small and makes the common "delete an unused template" case clear.
 func (s *Store) TemplateRefs(ctx context.Context) (map[string]TemplateRef, error) {
 	out := map[string]TemplateRef{}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.read().QueryContext(ctx,
 		`SELECT template_id, COUNT(*) FROM devices WHERE template_id <> '' GROUP BY template_id`)
 	if err != nil {
 		return nil, err
@@ -117,7 +117,7 @@ func (s *Store) TemplateRefs(ctx context.Context) (map[string]TemplateRef, error
 		return nil, err
 	}
 
-	rows, err = s.db.QueryContext(ctx,
+	rows, err = s.read().QueryContext(ctx,
 		`SELECT template_id, COUNT(*) FROM ap_groups WHERE template_id <> '' GROUP BY template_id`)
 	if err != nil {
 		return nil, err
@@ -139,7 +139,7 @@ func (s *Store) TemplateRefs(ctx context.Context) (map[string]TemplateRef, error
 // CountTemplateRefs reports the total reference count for one template.
 func (s *Store) CountTemplateRefs(ctx context.Context, id string) (TemplateRef, error) {
 	var r TemplateRef
-	err := s.db.QueryRowContext(ctx, `
+	err := s.read().QueryRowContext(ctx, `
 SELECT (SELECT COUNT(*) FROM devices   WHERE template_id = ?),
        (SELECT COUNT(*) FROM ap_groups WHERE template_id = ?)`, id, id).
 		Scan(&r.Devices, &r.Groups)

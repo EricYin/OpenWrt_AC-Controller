@@ -113,7 +113,7 @@ SELECT c.mac, c.ap_mac, c.ip, c.ssid, c.ifname, c.band, c.signal, c.rx_rate, c.t
 FROM clients c
 LEFT JOIN client_meta m ON m.mac = c.mac
 ORDER BY c.online DESC, c.signal DESC, c.mac`
-	rows, err := s.db.QueryContext(ctx, q)
+	rows, err := s.read().QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,7 @@ SELECT c.mac, c.ap_mac, c.ip, c.ssid, c.ifname, c.band, c.signal, c.rx_rate, c.t
 FROM clients c
 LEFT JOIN client_meta m ON m.mac = c.mac
 WHERE c.mac = ?`
-	c, err := scanClientRow(s.db.QueryRowContext(ctx, q, mac))
+	c, err := scanClientRow(s.read().QueryRowContext(ctx, q, mac))
 	if err == sql.ErrNoRows {
 		return Client{}, ErrNotFound
 	}
@@ -172,7 +172,18 @@ func scanClientRow(row interface{ Scan(...any) error }) (Client, error) {
 // CountClients reports how many stations are currently associated.
 func (s *Store) CountClients(ctx context.Context) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM clients WHERE online = 1`).Scan(&n)
+	err := s.read().QueryRowContext(ctx, `SELECT COUNT(*) FROM clients WHERE online = 1`).Scan(&n)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return n, err
+}
+
+// CountAllClients reports every station row, including offline history. The
+// metrics endpoint uses it for the total; the live view only needs online.
+func (s *Store) CountAllClients(ctx context.Context) (int, error) {
+	var n int
+	err := s.read().QueryRowContext(ctx, `SELECT COUNT(*) FROM clients`).Scan(&n)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}

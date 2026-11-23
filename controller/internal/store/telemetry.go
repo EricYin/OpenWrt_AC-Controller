@@ -146,7 +146,7 @@ FROM client_samples
 WHERE mac = ? AND ts >= ? AND ts <= ?
 GROUP BY bucket
 ORDER BY bucket`
-	rows, err := s.db.QueryContext(ctx, q, bucket, bucket, mac, from, to)
+	rows, err := s.read().QueryContext(ctx, q, bucket, bucket, mac, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("client series: %w", err)
 	}
@@ -191,7 +191,7 @@ FROM radio_samples WHERE ts >= ? AND ts <= ?`
 	}
 	q += ` ORDER BY ap_mac, radio, ts`
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.read().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("radio series: %w", err)
 	}
@@ -308,7 +308,7 @@ func (s *Store) LatestRadios(ctx context.Context) ([]RadioPoint, error) {
 SELECT updated_at, ap_mac, radio, band, up, channel, freq_mhz, htmode, width_mhz, txpower, country, utilization, clients
 FROM radio_state
 ORDER BY ap_mac, radio`
-	rows, err := s.db.QueryContext(ctx, q)
+	rows, err := s.read().QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("latest radios: %w", err)
 	}
@@ -343,7 +343,7 @@ FROM client_samples
 WHERE ts >= ? AND ts <= ?
 GROUP BY bucket, ap_mac
 ORDER BY bucket, ap_mac`
-	rows, err := s.db.QueryContext(ctx, q, bucket, bucket, from, to)
+	rows, err := s.read().QueryContext(ctx, q, bucket, bucket, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("client counts: %w", err)
 	}
@@ -382,10 +382,10 @@ func (s *Store) PruneSamples(ctx context.Context, before int64) (int64, error) {
 // CountSamples reports the current size of both telemetry tables. Surfaced in
 // health so a growing database is visible before it becomes a problem.
 func (s *Store) CountSamples(ctx context.Context) (clients, radios int64, err error) {
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM client_samples`).Scan(&clients); err != nil {
+	if err := s.read().QueryRowContext(ctx, `SELECT COUNT(*) FROM client_samples`).Scan(&clients); err != nil {
 		return 0, 0, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM radio_samples`).Scan(&radios); err != nil {
+	if err := s.read().QueryRowContext(ctx, `SELECT COUNT(*) FROM radio_samples`).Scan(&radios); err != nil {
 		return 0, 0, err
 	}
 	return clients, radios, nil
@@ -395,7 +395,7 @@ func (s *Store) CountSamples(ctx context.Context) (clients, radios int64, err er
 // there is none. The UI uses it to say how much history actually exists.
 func (s *Store) OldestSample(ctx context.Context) (int64, error) {
 	var ts int64
-	err := s.db.QueryRowContext(ctx,
+	err := s.read().QueryRowContext(ctx,
 		`SELECT COALESCE(MIN(ts), 0) FROM client_samples`).Scan(&ts)
 	return ts, err
 }

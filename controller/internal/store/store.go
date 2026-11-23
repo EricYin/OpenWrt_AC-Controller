@@ -118,7 +118,12 @@ type Device struct {
 }
 
 type Store struct {
+	// db is the single-writer handle. SQLite admits one writer at a time, so
+	// keeping the pool at one connection removes SQLITE_BUSY storms.
 	db *sql.DB
+	// rdb is a small read pool over the same WAL database: readers do not block
+	// the writer and can run concurrently with each other.
+	rdb *sql.DB
 }
 
 func Open(path string) (*Store, error) {
@@ -142,10 +147,42 @@ func Open(path string) (*Store, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
-	return &Store{db: db}, nil
+	// WAL lets readers run while the writer commits. A dedicated read pool is
+	// what turns that into concurrency; with one shared handle every SELECT
+	// would queue behind the next heartbeat write.
+	rdb, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open sqlite reader: %w", err)
+	}
+	rdb.SetMaxOpenConns(4)
+	rdb.SetMaxIdleConns(4)
+	if err := rdb.Ping(); err != nil {
+		db.Close()
+		rdb.Close()
+		return nil, fmt.Errorf("ping sqlite reader: %w", err)
+	}
+	return &Store{db: db, rdb: rdb}, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+// read returns the reader pool. A Store built without one (tests, embedders)
+// falls back to the writer so it keeps working.
+func (s *Store) read() *sql.DB {
+	if s.rdb != nil {
+		return s.rdb
+	}
+	return s.db
+}
+
+func (s *Store) Close() error {
+	err := s.db.Close()
+	if s.rdb != nil {
+		if rerr := s.rdb.Close(); err == nil {
+			err = rerr
+		}
+	}
+	return err
+}
 
 func (s *Store) Migrate(ctx context.Context) error {
 	const schema = `
@@ -672,7 +709,7 @@ func (s *Store) DeleteDevice(ctx context.Context, mac string) error {
 }
 
 func (s *Store) EnrollmentCredentials(ctx context.Context, mac string) (public, id string, err error) {
-	err = s.db.QueryRowContext(ctx, `SELECT enrollment_public, enrollment_id FROM devices WHERE mac = ?`, mac).Scan(&public, &id)
+	err = s.read().QueryRowContext(ctx, `SELECT enrollment_public, enrollment_id FROM devices WHERE mac = ?`, mac).Scan(&public, &id)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
 	}
@@ -682,7 +719,7 @@ func (s *Store) EnrollmentCredentials(ctx context.Context, mac string) (public, 
 // ClaimManagementKey returns the deployment key only for an approved enrollment.
 func (s *Store) ClaimManagementKey(ctx context.Context, mac, id string) (string, error) {
 	var key string
-	err := s.db.QueryRowContext(ctx, `SELECT settings.value FROM devices JOIN settings ON settings.key = ?
+	err := s.read().QueryRowContext(ctx, `SELECT settings.value FROM devices JOIN settings ON settings.key = ?
 WHERE mac = ? AND enrollment_id = ? AND state = 'adopted'`, SettingManagementKey, mac, id).Scan(&key)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
@@ -708,7 +745,7 @@ func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 
 func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 	q := `SELECT ` + deviceColumns + ` FROM devices ORDER BY last_seen DESC`
-	rows, err := s.db.QueryContext(ctx, q)
+	rows, err := s.read().QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -733,7 +770,7 @@ var ErrDeviceChanged = errors.New("device enrollment or revision changed; refres
 // GetDevice returns one device or ErrNotFound.
 func (s *Store) GetDevice(ctx context.Context, mac string) (Device, error) {
 	q := `SELECT ` + deviceColumns + ` FROM devices WHERE mac = ?`
-	d, err := scanDevice(s.db.QueryRowContext(ctx, q, mac))
+	d, err := scanDevice(s.read().QueryRowContext(ctx, q, mac))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Device{}, ErrNotFound
 	}
@@ -823,7 +860,7 @@ WHERE mac = ?`
 // CountDevices reports how many APs have ever been seen.
 func (s *Store) CountDevices(ctx context.Context) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM devices`).Scan(&n)
+	err := s.read().QueryRowContext(ctx, `SELECT COUNT(*) FROM devices`).Scan(&n)
 	return n, err
 }
 
