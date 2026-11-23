@@ -1079,6 +1079,11 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
         <button class="primary" id="go-apmgmt" type="button">前往 AP 管理</button>
       </div>
 
+      <div class="form" style="margin-bottom:10px">
+        <input id="device-search" type="search" placeholder="搜索主机名 / MAC / 型号 / IP" style="max-width:320px" />
+        <span class="msg" id="device-search-msg"></span>
+      </div>
+
       <table>
         <thead>
           <tr>
@@ -1237,6 +1242,8 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
         <label style="flex-direction:row;align-items:center;gap:6px">
           <input type="checkbox" id="client-tracked-only" /> 仅显示关注
         </label>
+        <input id="client-search" type="search" placeholder="搜索名称 / MAC / IP / SSID" style="max-width:320px" />
+        <span class="msg" id="client-search-msg"></span>
       </div>
 
       <table>
@@ -3176,12 +3183,26 @@ function renderDevices(list) {
   $('adopted').textContent = list.filter(x => x.state === 'adopted').length;
   renderRebootStatus(list);
   fillLEDPicker(list);
+  // 设备数量通常只有个位数，先在本地过滤再渲染，输入即生效且不影响下方的
+  // 重启/LED 选择器（它们始终拿到完整列表）。
+  const deviceQueryEl = $('device-search');
+  const deviceQuery = (deviceQueryEl && deviceQueryEl.value ? deviceQueryEl.value : '').trim().toLowerCase();
+  const visibleDevices = deviceQuery
+    ? list.filter(dev => [dev.hostname, dev.mac, dev.model, dev.ip, dev.firmware, dev.template_id, dev.group_id]
+      .some(v => v && String(v).toLowerCase().includes(deviceQuery)))
+    : list;
+  const deviceMsg = $('device-search-msg');
+  if (deviceMsg) deviceMsg.textContent = deviceQuery ? ('匹配 ' + visibleDevices.length + ' / ' + list.length) : '';
   if (!list.length) {
     rows.innerHTML = '<tr><td colspan="10" class="empty">等待 AP 上线…</td></tr>';
     return;
   }
+  if (!visibleDevices.length) {
+    rows.innerHTML = '<tr><td colspan="10" class="empty">没有匹配的 AP</td></tr>';
+    return;
+  }
   rows.innerHTML = '';
-  for (const dev of list) {
+  for (const dev of visibleDevices) {
     const tr = document.createElement('tr');
     cell(tr, dev.hostname);
     cell(tr, dev.model);
@@ -3344,10 +3365,18 @@ function renderClients(payload) {
   if (clientSelected && !list.some(c => c.mac === clientSelected)) closeClientDetail();
 
   const trackedOnly = $('client-tracked-only').checked;
-  const visible = trackedOnly ? list.filter(c => c.tracked) : list;
+  let visible = trackedOnly ? list.filter(c => c.tracked) : list;
+  // 客户端可能成百上千，搜索在本地快照上完成：轮询每轮都会带来全量列表，
+  // 因此输入即筛选，不需要额外的服务端往返。
+  if (clientQuery) {
+    visible = visible.filter(c => [c.alias, c.mac, c.ip, c.ssid, c.ap_mac, c.band, c.note]
+      .some(v => v && String(v).toLowerCase().includes(clientQuery)));
+  }
+  const clientMsg = $('client-search-msg');
+  if (clientMsg) clientMsg.textContent = clientQuery ? ('匹配 ' + visible.length + ' / ' + list.length) : '';
   if (!visible.length) {
     clientRows.innerHTML = '<tr><td colspan="10" class="empty">'
-      + (trackedOnly ? '没有关注的客户端' : '暂无客户端上报') + '</td></tr>';
+      + (clientQuery ? '没有匹配的客户端' : trackedOnly ? '没有关注的客户端' : '暂无客户端上报') + '</td></tr>';
     return;
   }
   clientRows.innerHTML = '';
@@ -3384,6 +3413,8 @@ function renderClients(payload) {
 }
 
 let clientCache = [];
+// 无线终端页的本地搜索词；轮询每轮都拿全量快照，因此不需要服务端往返。
+let clientQuery = '';
 let clientSelected = '';
 let lastClientPayload = null;
 
@@ -3597,6 +3628,21 @@ document.addEventListener('keydown', (ev) => {
 
 $('client-tracked-only').addEventListener('change', () => {
   if (lastClientPayload) renderClients(lastClientPayload);
+});
+
+// 搜索使用 200ms 防抖：每敲一个字符都重绘整张表在几百个客户端时会明显卡顿。
+let clientSearchTimer = 0;
+$('client-search').addEventListener('input', (e) => {
+  const value = e.target.value;
+  clearTimeout(clientSearchTimer);
+  clientSearchTimer = setTimeout(() => {
+    clientQuery = value.trim().toLowerCase();
+    if (lastClientPayload) renderClients(lastClientPayload);
+  }, 200);
+});
+
+$('device-search').addEventListener('input', () => {
+  if (deviceCache) renderDevices(deviceCache);
 });
 
 let refreshInFlight = false;

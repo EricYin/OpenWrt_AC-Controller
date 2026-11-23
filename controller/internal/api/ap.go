@@ -517,6 +517,11 @@ func clientIP(r *http.Request) string {
 // handleClients lists associated stations across all APs. Signal strength and
 // rates come from the AP; the controller never sees these clients itself.
 func (s *Server) handleClients(w http.ResponseWriter, r *http.Request) {
+	pq, err := parsePageQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	clients, err := s.Store.ListClients(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -528,9 +533,14 @@ func (s *Server) handleClients(w http.ResponseWriter, r *http.Request) {
 			online++
 		}
 	}
+	total := len(clients)
+	filtered := filterClients(clients, pq.Q)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"clients": clients,
+		"clients": paginate(filtered, pq),
 		"online":  online,
-		"total":   len(clients),
+		"total":   total,
+		"matched": len(filtered),
+		"limit":   pq.Limit,
+		"offset":  pq.Offset,
 	})
 }

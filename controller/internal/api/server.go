@@ -570,13 +570,26 @@ func (s *Server) handlePubKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
+	pq, err := parsePageQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	devices, err := s.Store.ListDevices(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.annotatePresence(devices)
-	writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
+	total := len(devices)
+	filtered := filterDevices(devices, pq.Q)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"devices": paginate(filtered, pq),
+		"total":   total,
+		"matched": len(filtered),
+		"limit":   pq.Limit,
+		"offset":  pq.Offset,
+	})
 }
 
 func (s *Server) handleDevice(w http.ResponseWriter, r *http.Request) {
