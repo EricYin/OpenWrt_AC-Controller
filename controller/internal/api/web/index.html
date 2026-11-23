@@ -1040,6 +1040,7 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
       <a href="#" data-view="telemetry">运行情况</a>
       <a href="#" data-view="apmgmt">AP管理</a>
       <a href="#" data-view="wireless">无线服务</a>
+      <a href="#" data-view="roaming">漫游管理</a>
       <a href="#" data-view="rf">射频管理</a>
       <a href="#" data-view="ports">设备端口</a>
       <a href="#" data-view="firmware">固件升级</a>
@@ -1464,6 +1465,48 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
           让 AP 按最新模板重新生成配置包并拉取；采纳状态不受影响。
           模板改动对所有使用它的设备生效，但每台设备需各自触发一次。
         </p>
+      </div>
+    </section>
+
+    <section id="view-roaming" class="hidden">
+      <h1>漫游管理</h1>
+      <div class="sub">按模板设置 802.11v 引导（BTM）阈值；保存后已采纳的设备需在“无线服务”页重新下发才生效</div>
+
+      <div class="panel">
+        <h2>
+          模板漫游策略
+          <select id="roam-template"><option value="">选择模板…</option></select>
+          <span class="rev" id="roam-refs"></span>
+          <span class="badge pending" id="roam-dirty" hidden>未保存</span>
+          <button id="roam-save" class="primary">保存策略</button>
+        </h2>
+        <p class="note">
+          开启后 AP 在本地按 3 秒采样（有弱客户端时）/10 秒（空闲）：信号 ≤ 阈值且连续 N 次才算粘性，
+          接收速率仍高于门限的客户端不会被移动。未开启时只保留内置的保守建议（-78 dBm 起，依赖 AP 间通告）；
+          关闭并重新下发后 AP 恢复被动模式。AP 连续 3 次建议都被拒绝时会静默 30 分钟。
+        </p>
+        <div class="wl-editor">
+          <div class="wl-checks" style="margin-bottom:12px">
+            <label><input type="checkbox" id="roam-enabled"> 启用 802.11v 漫游引导</label>
+            <label><input type="checkbox" id="roam-imminent" data-roam-field> BTM 标记 disassociation imminent</label>
+          </div>
+          <div class="wl-fields">
+            <label>触发阈值（dBm）<input id="roam-btm-snr" data-roam-field type="number" step="1" min="-95" max="-40"></label>
+            <label>连续弱采样次数<input id="roam-consecutive" data-roam-field type="number" step="1" min="1" max="60"></label>
+            <label>刚接入保护（秒）<input id="roam-min-connected" data-roam-field type="number" step="1" min="0" max="600"></label>
+            <label>建议冷却（秒）<input id="roam-cooldown" data-roam-field type="number" step="1" min="10" max="3600"></label>
+            <label>速率门限（Mbps，-1 关闭）<input id="roam-min-rate" data-roam-field type="number" step="1" min="-1" max="1000"></label>
+          </div>
+          <details style="margin-top:14px">
+            <summary class="wl-roam-title">高级：忽略建议后强制下线</summary>
+            <div class="wl-fields" style="margin-top:12px">
+              <label>等待时间（秒，0 关闭）<input id="roam-force" data-roam-field type="number" step="1" min="0" max="600"></label>
+              <label>禁止回连（秒）<input id="roam-ban" data-roam-field type="number" step="1" min="0" max="1800"></label>
+            </div>
+            <p class="hint">强制下线只在“等待时间 &gt; 0”时启用；禁回连让客户端只能落到邻居 AP，设置过长会表现为掉线。</p>
+          </details>
+        </div>
+        <div class="msg" id="roam-msg"></div>
       </div>
     </section>
 
@@ -6320,6 +6363,133 @@ $('wl-repush').addEventListener('click', async () => {
   }
 });
 
+// --- 漫游管理视图 ------------------------------------------------------------
+// 模板里的 steer_policy 由本页单独读写：与 SSID/端口页共用一个模板，但走
+// /steer-policy 局部更新，避免用整模板覆盖另一页刚保存的改动。
+
+let roamTemplateId = '';
+let roamDirty = false;
+
+function sayRoam(text, kind) {
+  const m = $('roam-msg');
+  m.textContent = text || '';
+  m.className = 'msg' + (kind ? ' ' + kind : '');
+}
+
+function setRoamDirty(on) {
+  roamDirty = !!on;
+  const badge = $('roam-dirty');
+  if (badge) badge.hidden = !roamDirty;
+}
+
+function toggleRoamFields() {
+  const on = $('roam-enabled').checked;
+  document.querySelectorAll('#view-roaming [data-roam-field]').forEach(el => {
+    el.disabled = !on;
+  });
+}
+
+function renderRoamPolicy() {
+  const tpl = templates.find(t => t.id === roamTemplateId);
+  const p = tpl && tpl.steer_policy;
+  $('roam-enabled').checked = !!p;
+  $('roam-btm-snr').value = p ? p.btm_snr : -70;
+  $('roam-consecutive').value = p ? (p.btm_consecutive || 3) : 3;
+  $('roam-min-connected').value = p ? Math.round((p.min_connected_ms || 30000) / 1000) : 30;
+  $('roam-cooldown').value = p ? Math.round((p.cooldown_ms || 120000) / 1000) : 120;
+  $('roam-min-rate').value = p && p.min_rate_mbps !== undefined ? p.min_rate_mbps : 24;
+  $('roam-force').value = p ? Math.round((p.force_after_ms || 0) / 1000) : 0;
+  $('roam-ban').value = p ? Math.round((p.ban_ms || 30000) / 1000) : 30;
+  $('roam-imminent').checked = !!(p && p.btm_disassoc_imminent);
+  $('roam-refs').textContent = tpl ? templateRefLabel(tpl.id) : '';
+  toggleRoamFields();
+  setRoamDirty(false);
+}
+
+// collectRoamPolicy 只做前端范围检查；语义校验仍以后端 model.SteerPolicy.Validate 为准。
+function collectRoamPolicy() {
+  const num = (id, name, min, max) => {
+    const v = Number($(id).value);
+    if (!Number.isFinite(v) || v < min || v > max) {
+      throw new Error(name + ' 需在 ' + min + '..' + max + ' 之间');
+    }
+    return v;
+  };
+  const snr = Math.trunc(num('roam-btm-snr', '触发阈值', -95, -1));
+  const consecutive = Math.trunc(num('roam-consecutive', '连续采样次数', 1, 60));
+  const minConnectedMs = Math.round(num('roam-min-connected', '刚接入保护', 0, 600) * 1000);
+  const cooldownMs = Math.round(num('roam-cooldown', '建议冷却', 10, 3600) * 1000);
+  const minRateMbps = Math.trunc(num('roam-min-rate', '速率门限', -1, 1000));
+  const forceMs = Math.round(num('roam-force', '强制下线等待时间', 0, 600) * 1000);
+  let banMs = Math.round(num('roam-ban', '禁止回连时间', 0, 1800) * 1000);
+  // 后端 Normalize 对“强制下线但未设禁回连”补 30s；这里先补，保存后页面不会跳变。
+  if (forceMs > 0 && banMs <= 0) banMs = 30000;
+  return {
+    btm_snr: snr,
+    btm_consecutive: consecutive,
+    btm_disassoc_imminent: $('roam-imminent').checked,
+    force_after_ms: forceMs,
+    ban_ms: banMs,
+    min_connected_ms: minConnectedMs,
+    cooldown_ms: cooldownMs,
+    min_rate_mbps: minRateMbps,
+  };
+}
+
+async function loadRoaming() {
+  try {
+    await loadTemplates();
+    fillTemplatePicker($('roam-template'), roamTemplateId);
+    if (!$('roam-template').value && templates.length) $('roam-template').value = templates[0].id;
+    roamTemplateId = $('roam-template').value;
+    sayRoam('');
+    renderRoamPolicy();
+  } catch (e) {
+    if (!noteUnauthorized(e)) sayRoam(e.message, 'err');
+  }
+}
+
+$('roam-template').addEventListener('change', () => {
+  if (roamDirty && !confirm('当前模板有未保存的漫游策略修改，切换后将丢弃。继续？')) {
+    $('roam-template').value = roamTemplateId;
+    return;
+  }
+  roamTemplateId = $('roam-template').value;
+  sayRoam('');
+  renderRoamPolicy();
+});
+
+$('roam-enabled').addEventListener('change', () => {
+  toggleRoamFields();
+  setRoamDirty(true);
+});
+
+// 两个事件都要监听：数字输入走 input，复选框走 change；模板选择由上面的处理器
+// 单独负责，不参与脏状态。
+$('view-roaming').addEventListener('input', (ev) => {
+  if (ev.target.id !== 'roam-template') setRoamDirty(true);
+});
+$('view-roaming').addEventListener('change', (ev) => {
+  if (ev.target.id !== 'roam-template') setRoamDirty(true);
+});
+
+$('roam-save').addEventListener('click', async () => {
+  const tpl = templates.find(t => t.id === roamTemplateId);
+  if (!tpl) return sayRoam(templates.length ? '请先选择模板' : '当前没有模板', 'err');
+  try {
+    const policy = $('roam-enabled').checked ? collectRoamPolicy() : null;
+    await api('PUT', '/api/v1/templates/' + encodeURIComponent(tpl.id) + '/steer-policy',
+      { policy });
+    sayRoam(policy
+      ? '模板 ' + tpl.id + ' 的漫游策略已保存；已采纳设备需重新下发后生效'
+      : '已关闭模板 ' + tpl.id + ' 的漫游策略；重新下发后 AP 恢复被动模式', 'ok');
+    await loadTemplates();
+    renderRoamPolicy();
+  } catch (e) {
+    if (!noteUnauthorized(e)) sayRoam(e.message, 'err');
+  }
+});
+
 // --- 固件视图 ----------------------------------------------------------------
 // 仓库写入走原始字节上传（不是 JSON），因此不能复用 api()；目标版本只写库，
 // 真正刷写在 AP 侧，页面只展示 AP 回报的状态与失败原因。
@@ -7101,6 +7271,7 @@ document.querySelectorAll('.nav a[data-view]').forEach(a => {
       clients: 'view-clients',
       telemetry: 'view-telemetry',
       wireless: 'view-wireless',
+      roaming: 'view-roaming',
       rf: 'view-rf',
       ports: 'view-ports',
       firmware: 'view-firmware',
@@ -7111,6 +7282,7 @@ document.querySelectorAll('.nav a[data-view]').forEach(a => {
     }
     if (view === 'telemetry') loadTelemetry();
     if (view === 'wireless') loadWireless();
+    if (view === 'roaming') loadRoaming();
     if (view === 'rf') loadRF();
     if (view === 'ports') loadPorts();
     if (view === 'firmware') loadFirmware();

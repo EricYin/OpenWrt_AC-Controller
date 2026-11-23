@@ -157,6 +157,19 @@ func (s *SteerLoop) SetPolicy(p *model.SteerPolicy) {
 	s.pending = map[string]pendingKick{}
 }
 
+// ClearPolicy removes the controller's policy and returns the loop to passive
+// behaviour. A package that no longer carries a steer-policy file must clear
+// the last thresholds; otherwise "disable roaming steering" on the controller
+// would leave the AP steering clients with stale values forever.
+func (s *SteerLoop) ClearPolicy() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.policy = nil
+	s.weak = map[string]int{}
+	s.cooldown = map[string]time.Time{}
+	s.pending = map[string]pendingKick{}
+}
+
 // SetBindings installs the controller's client→SSID preferences. The
 // per-client detection maps are reset: intent changed, so old streaks and
 // cooldowns no longer describe what the AP should do.

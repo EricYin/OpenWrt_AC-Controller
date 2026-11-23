@@ -82,6 +82,74 @@ func TestTemplateSSIDsRejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestTemplateSteerPolicyPartialUpdate(t *testing.T) {
+	f := newFixture(t)
+
+	// Change ONLY the roaming policy; SSIDs, radios and the bridge must survive.
+	resp := f.do(http.MethodPut, "/api/v1/templates/default/steer-policy", map[string]any{
+		"policy": map[string]any{"btm_snr": -70, "btm_consecutive": 3},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("put steer-policy status = %d", resp.StatusCode)
+	}
+	saved := decode[model.Template](t, resp)
+	if saved.SteerPolicy == nil || saved.SteerPolicy.BtmSNR != -70 {
+		t.Fatalf("saved policy = %+v", saved.SteerPolicy)
+	}
+	// Defaults are resolved before storing, so the page and the AP agree.
+	if saved.SteerPolicy.MinConnectedMS != 30000 || saved.SteerPolicy.CooldownMS != 120000 {
+		t.Errorf("defaults not normalized: %+v", saved.SteerPolicy)
+	}
+	if len(saved.SSIDs) != len(provision.DefaultTemplate().SSIDs) {
+		t.Errorf("ssids clobbered by policy save: %d", len(saved.SSIDs))
+	}
+	if len(saved.Radios) == 0 {
+		t.Errorf("radios clobbered by policy save")
+	}
+
+	// An explicit null removes the policy; that is a real operator choice.
+	resp = f.do(http.MethodPut, "/api/v1/templates/default/steer-policy",
+		map[string]any{"policy": nil})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear steer-policy status = %d", resp.StatusCode)
+	}
+	stored, err := f.store.GetTemplate(t.Context(), "default")
+	if err != nil {
+		t.Fatalf("get template: %v", err)
+	}
+	if stored.SteerPolicy != nil {
+		t.Errorf("policy not cleared: %+v", stored.SteerPolicy)
+	}
+}
+
+func TestTemplateSteerPolicyRejectsInvalid(t *testing.T) {
+	f := newFixture(t)
+
+	// A non-negative dBm threshold is meaningless and must be refused.
+	resp := f.do(http.MethodPut, "/api/v1/templates/default/steer-policy", map[string]any{
+		"policy": map[string]any{"btm_snr": 0, "btm_consecutive": 3},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("btm_snr=0 status = %d, want 400", resp.StatusCode)
+	}
+
+	// Unknown fields are a client bug, not something to ignore.
+	resp = f.do(http.MethodPut, "/api/v1/templates/default/steer-policy", map[string]any{
+		"policy": map[string]any{"btm_snr": -70},
+		"ssids":  []model.SSID{},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field status = %d, want 400", resp.StatusCode)
+	}
+
+	resp = f.do(http.MethodPut, "/api/v1/templates/nope/steer-policy", map[string]any{
+		"policy": map[string]any{"btm_snr": -70},
+	})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing template status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestTemplateRename(t *testing.T) {
 	f := newFixture(t)
 

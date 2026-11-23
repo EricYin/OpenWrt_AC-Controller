@@ -256,6 +256,7 @@ func (s *Server) Handler() http.Handler {
 	// does not display, and renaming must not require re-sending 18 SSIDs.
 	admin("PUT /api/v1/templates/{id}/ssids", s.handleTemplateSSIDs)
 	admin("PUT /api/v1/templates/{id}/name", s.handleTemplateRename)
+	admin("PUT /api/v1/templates/{id}/steer-policy", s.handleTemplateSteerPolicy)
 
 	// AP groups: membership plus the template each group's members should run.
 	admin("GET /api/v1/groups", s.handleGroups)
@@ -1073,6 +1074,56 @@ func (s *Server) handleTemplateRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Store.LogEvent(r.Context(), "template", "", "template "+t.ID+" renamed to "+t.Name)
+	writeJSON(w, http.StatusOK, t)
+}
+
+// handleTemplateSteerPolicy replaces only the roaming policy of a stored
+// template.
+//
+// The roaming page edits thresholds that the SSID and ports pages never show,
+// so sending the whole template from there would let a stale draft revert a
+// concurrent edit. A dedicated endpoint merges the policy into whatever is
+// currently stored, and an explicit null removes it: "no policy" is a real
+// operator choice (the AP keeps its passive behaviour) and must be
+// distinguishable from "field omitted".
+func (s *Server) handleTemplateSteerPolicy(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Policy *model.SteerPolicy `json:"policy"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+		return
+	}
+
+	t, err := s.Store.GetTemplate(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if req.Policy != nil {
+		// Persist the resolved defaults rather than the sparse request: the file
+		// the AP receives and the page that shows it then agree field for field.
+		req.Policy.Normalize()
+	}
+	t.SteerPolicy = req.Policy
+	if err := t.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.Store.UpsertTemplate(r.Context(), t); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if req.Policy == nil {
+		s.Store.LogEvent(r.Context(), "template", "", "template "+t.ID+" steer-policy cleared")
+	} else {
+		s.Store.LogEvent(r.Context(), "template", "", fmt.Sprintf(
+			"template %s steer-policy btm_snr=%d consecutive=%d",
+			t.ID, req.Policy.BtmSNR, req.Policy.BtmConsecutive))
+	}
 	writeJSON(w, http.StatusOK, t)
 }
 

@@ -619,3 +619,26 @@ func TestSteerLoopAdvisesAgainAfterTheClientRoams(t *testing.T) {
 		t.Fatalf("BTM requests = %d, want %d (the roam earns a new suggestion)", sent, btmMaxUnanswered+1)
 	}
 }
+
+func TestRecordSteeringDirectiveClearsRemovedPolicy(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := &Agent{Config: Config{Root: t.TempDir()}, Log: log, steer: NewSteerLoop()}
+
+	a.recordSteeringDirective("", `{"btm_snr":-70,"btm_consecutive":2}`)
+	if a.state.SteerPolicyRaw == "" {
+		t.Fatal("steer-policy was not stored")
+	}
+	if _, active := a.steer.policySnapshot(); !active {
+		t.Fatal("steer-policy is not active after being recorded")
+	}
+
+	// A package without a steer-policy file means "stop steering". Keeping the
+	// old thresholds would make the controller's disable switch a no-op.
+	a.recordSteeringDirective("", "")
+	if a.state.SteerPolicyRaw != "" {
+		t.Fatalf("steer-policy still stored: %q", a.state.SteerPolicyRaw)
+	}
+	if _, active := a.steer.policySnapshot(); active {
+		t.Fatal("steer-policy still active after removal")
+	}
+}

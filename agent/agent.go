@@ -1514,13 +1514,23 @@ func (a *Agent) recordSteeringDirective(wanted, policy string) {
 	if wanted = strings.TrimSpace(wanted); wanted != "" {
 		a.state.Steering = wanted
 	}
-	if policy = strings.TrimSpace(policy); policy != "" {
-		if p, err := parseSteerPolicy([]byte(policy)); err != nil {
-			a.Log.Warn("steer-policy rejected", "err", err)
-		} else {
-			a.steer.SetPolicy(p)
-			a.state.SteerPolicyRaw = policy
+	policy = strings.TrimSpace(policy)
+	if policy == "" {
+		// The controller removed the policy. Keeping the previous thresholds
+		// would make "disable steering" a no-op on an AP that already ran one.
+		if a.state.SteerPolicyRaw != "" {
+			if a.steer != nil {
+				a.steer.ClearPolicy()
+			}
+			a.state.SteerPolicyRaw = ""
 		}
+		return
+	}
+	if p, err := parseSteerPolicy([]byte(policy)); err != nil {
+		a.Log.Warn("steer-policy rejected", "err", err)
+	} else {
+		a.steer.SetPolicy(p)
+		a.state.SteerPolicyRaw = policy
 	}
 }
 
