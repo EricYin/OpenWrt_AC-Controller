@@ -33,7 +33,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-} GOARCH=${TARGETARCH:-} go build -trimpath \
         -X github.com/naoki66/ac-controller/shared/version.Date=${DATE}" \
       -o /out/ac ./controller/cmd/ac
 
-FROM alpine:3.21
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata \
  && adduser -D -H -u 1000 ac \
  && mkdir -p /var/lib/ac \
