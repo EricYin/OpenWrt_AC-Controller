@@ -1,0 +1,74 @@
+name: Go CI
+
+# 编译与测试门禁：推送 main 和任意 PR 都先过格式、静态检查、竞态测试和
+# 双架构构建。镜像发布（docker-hub.yml）与 OpenWrt 打包各自独立，只有这里
+# 通过才说明代码本身可用。
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt required for:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      # 竞态检测需要 cgo；ubuntu runner 自带 gcc，生产二进制仍是 CGO_ENABLED=0。
+      - name: Test (race)
+        run: go test -race ./...
+
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build controller (amd64, arm64)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -o /tmp/ac-amd64 ./controller/cmd/ac
+          GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/ac-arm64 ./controller/cmd/ac
+
+      - name: Build agent (arm64)
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+        run: go build -trimpath -o /tmp/ac-agent-arm64 ./agent/cmd/acagent
