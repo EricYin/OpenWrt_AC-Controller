@@ -552,6 +552,12 @@ func New(cfg Config, log *slog.Logger) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The site peer key lives in /etc/config/ac and has nothing to do with the
+	// management binding. Clearing cfg.Secret for a reset below must not also
+	// disable AP-to-AP coordination: without peer announcements no AP ever gets
+	// a BTM candidate and clients stay sticky (found on 10.10.30.250, whose
+	// state file kept management_reset=true after it was re-adopted).
+	peerSecret := cfg.Secret
 	if st.ManagementReset {
 		cfg.Secret = ""
 	} else if err := loadControllerOverride(&cfg, &st); err != nil {
@@ -630,17 +636,17 @@ func New(cfg Config, log *slog.Logger) (*Agent, error) {
 		a.Radios.Ubus = a.ubus
 		a.Neighbors.Ubus = a.ubus
 	}
-	if cfg.PeerPort > 0 && len(cfg.Secret) >= 12 {
+	if cfg.PeerPort > 0 && len(peerSecret) >= 12 {
 		a.peerBus = NewPeerBusWithOptions(PeerOptions{
 			Port:     cfg.PeerPort,
 			Interval: cfg.PeerInterval,
 			SelfMAC:  id.MAC,
 			Log:      log,
-			Secret:   cfg.Secret,
+			Secret:   peerSecret,
 			Network:  cfg.PeerNetwork,
 			Runner:   runner,
 		})
-	} else if cfg.PeerPort > 0 && cfg.Secret != "" {
+	} else if cfg.PeerPort > 0 && peerSecret != "" {
 		log.Warn("AP peer coordination disabled: shared secret must be at least 12 characters")
 	}
 	a.btm = newBTMGuard()

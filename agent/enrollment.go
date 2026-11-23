@@ -157,6 +157,10 @@ func (a *Agent) acceptManagementBinding(b managementBinding) error {
 	a.state.ACID, a.state.PubKey, a.state.ManagementKey = b.claim.ACID, b.claim.SigningKey, b.claim.Credential
 	a.state.ManagementTrafficKey = b.trafficKey
 	a.state.ManagementAddr = a.client.BaseURL
+	// The reset is finished the moment a controller claims this AP: keeping the
+	// flag would clear the enrollment secret on every later start and, with it,
+	// peer coordination.
+	a.state.ManagementReset = false
 	if err := a.saveState(); err != nil {
 		a.state = before
 		return err
