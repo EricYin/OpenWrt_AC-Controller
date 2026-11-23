@@ -150,6 +150,33 @@ func (s *Store) CompleteAction(ctx context.Context, mac, id, state, message stri
 	return n > 0, nil
 }
 
+// GetAction returns one action by id. It is used when a result arrives and the
+// caller needs the arguments the command was queued with (the hello result
+// carries only the outcome, not the request).
+func (s *Store) GetAction(ctx context.Context, mac, id string) (Action, error) {
+	var (
+		a    Action
+		args string
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, mac, type, args, state, message, created_at, dispatched_at, finished_at
+		   FROM device_actions WHERE id = ? AND mac = ?`, id, mac).
+		Scan(&a.ID, &a.MAC, &a.Type, &args, &a.State, &a.Message,
+			&a.CreatedAt, &a.DispatchedAt, &a.FinishedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Action{}, ErrNotFound
+	}
+	if err != nil {
+		return Action{}, fmt.Errorf("store: get action: %w", err)
+	}
+	if args != "" && args != "{}" && args != "null" {
+		if err := json.Unmarshal([]byte(args), &a.Args); err != nil {
+			return Action{}, fmt.Errorf("store: decode action args: %w", err)
+		}
+	}
+	return a, nil
+}
+
 // ListActions returns the newest actions for one AP, most recent first.
 func (s *Store) ListActions(ctx context.Context, mac string, limit int) ([]Action, error) {
 	if limit <= 0 || limit > 100 {

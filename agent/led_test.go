@@ -116,6 +116,57 @@ func TestSetStatusLEDFollowsSysfsSymlinks(t *testing.T) {
 	}
 }
 
+func TestReadStatusLEDReportsBrightness(t *testing.T) {
+	root := t.TempDir()
+	green := writeLED(t, root, "green_status")
+	writeLED(t, root, "red_status")
+
+	state, ok := readStatusLED(root)
+	if !ok || state != "off" {
+		t.Fatalf("state = %q ok=%v, want off", state, ok)
+	}
+	if err := os.WriteFile(filepath.Join(green, "brightness"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("seed brightness: %v", err)
+	}
+	state, ok = readStatusLED(root)
+	if !ok || state != "on" {
+		t.Errorf("state = %q ok=%v, want on", state, ok)
+	}
+}
+
+// "on" is expressed on the green LED, so another lit colour must not be read
+// as the running state.
+func TestReadStatusLEDPrefersGreen(t *testing.T) {
+	root := t.TempDir()
+	red := writeLED(t, root, "red_status")
+	writeLED(t, root, "green_status")
+	if err := os.WriteFile(filepath.Join(red, "brightness"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("seed red brightness: %v", err)
+	}
+	if state, ok := readStatusLED(root); !ok || state != "off" {
+		t.Errorf("state = %q ok=%v, want off from the green LED", state, ok)
+	}
+}
+
+func TestReadStatusLEDWithoutStatusLED(t *testing.T) {
+	root := t.TempDir()
+	writeLED(t, root, "lan3_green")
+	if state, ok := readStatusLED(root); ok || state != "" {
+		t.Errorf("state = %q ok=%v, want no report", state, ok)
+	}
+}
+
+func TestReportedLEDStateUsesConfiguredRoot(t *testing.T) {
+	root := t.TempDir()
+	green := writeLED(t, filepath.Join(root, "sys/class/leds"), "green_status")
+	if err := os.WriteFile(filepath.Join(green, "brightness"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("seed brightness: %v", err)
+	}
+	if got := reportedLEDState(root); got != "on" {
+		t.Errorf("reported = %q, want on", got)
+	}
+}
+
 func TestValidateLEDState(t *testing.T) {
 	for _, state := range []string{"on", "off", " ON "} {
 		if err := validateLEDState(state); err != nil {

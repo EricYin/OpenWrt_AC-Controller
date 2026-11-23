@@ -1245,6 +1245,7 @@ func (a *Agent) buildHello(ctx context.Context) proto.Hello {
 		FirmwareState:   a.state.FirmwareState,
 		FirmwareMessage: a.state.FirmwareMessage,
 		Uptime:          systemUptime(a.Config.Root),
+		LEDState:        reportedLEDState(a.Config.Root),
 		Actions:         a.state.ActionResults,
 	}
 	// Announce to peers and, when enabled, make a local roaming suggestion.

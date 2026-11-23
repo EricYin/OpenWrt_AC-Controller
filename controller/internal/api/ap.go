@@ -331,6 +331,33 @@ func (s *Server) handleHello(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// A done led_set confirms the actual state even for agents that do not
+		// report one in their hello. The hello report below is measured after
+		// this command ran, so it still wins when both are present.
+		if res.Type == proto.ActionLEDSet && res.State == proto.ActionResultDone {
+			state := ""
+			if a, err := s.Store.GetAction(ctx, mac, res.ID); err != nil {
+				s.Log.Warn("LED action args not loaded", "mac", mac, "id", res.ID, "err", err)
+			} else {
+				state = strings.ToLower(strings.TrimSpace(a.Args["state"]))
+			}
+			if state == "on" || state == "off" {
+				if err := s.Store.RecordLEDState(ctx, mac, state, s.now().Unix()); err != nil {
+					s.Log.Warn("LED state not recorded", "mac", mac, "id", res.ID, "err", err)
+				}
+			}
+		}
+	}
+
+	if hello.LEDState != "" {
+		state := strings.ToLower(strings.TrimSpace(hello.LEDState))
+		if state == "on" || state == "off" {
+			if err := s.Store.RecordLEDState(ctx, mac, state, s.now().Unix()); err != nil {
+				s.Log.Warn("reported LED state not recorded", "mac", mac, "err", err)
+			}
+		} else {
+			s.Log.Warn("ignoring unknown LED state", "mac", mac, "state", hello.LEDState)
+		}
 	}
 
 	device, err := s.Store.GetDevice(ctx, mac)

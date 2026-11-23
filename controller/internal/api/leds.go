@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -81,6 +82,9 @@ func (s *Server) handleSetLEDSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Apply the new window right away: an operator saving 07:00–21:30 at 02:00
+	// expects the LED to go dark now, not after the first edge.
+	s.reconcileLED(r.Context(), device)
 	writeJSON(w, http.StatusOK, device)
 }
 
@@ -98,26 +102,43 @@ func formatLEDSchedule(onAt, offAt string) string {
 	return strings.Join(parts, ", ")
 }
 
-// RunLEDScheduler fires due LED schedules once a minute until ctx is cancelled.
+// ledRetryBackoff caps how often a drifting AP is retried. The first attempts
+// are quick so a one-off packet loss is repaired within minutes; the cap keeps a
+// permanently broken AP (no status LED, unreachable) from queueing a command
+// every minute for the rest of the day.
+var ledRetryBackoff = []time.Duration{
+	time.Minute, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute, 30 * time.Minute,
+}
+
+// ledRepairWarnAfter is the attempt count the UI shows as 整改异常.
+const ledRepairWarnAfter = 5
+
+func ledRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > len(ledRetryBackoff) {
+		return ledRetryBackoff[len(ledRetryBackoff)-1]
+	}
+	return ledRetryBackoff[attempt-1]
+}
+
+// RunLEDScheduler fires due LED schedules and repairs drifted state once a
+// minute until ctx is cancelled.
 func (s *Server) RunLEDScheduler(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	s.runDueLEDs(ctx)
+	s.runLEDRepairs(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			s.runDueLEDs(ctx)
+			s.runLEDRepairs(ctx)
 		}
 	}
-}
-
-type ledEvent struct {
-	at    int64
-	on    bool
-	state string
-	clock string
 }
 
 func (s *Server) runDueLEDs(ctx context.Context) {
@@ -128,24 +149,24 @@ func (s *Server) runDueLEDs(ctx context.Context) {
 		return
 	}
 	for _, d := range devices {
-		ev, ok := earliestLEDEvent(d, now.Unix())
+		target, ok := ledDueTarget(d, d.LEDOnNextAt <= now.Unix(), d.LEDOffNextAt <= now.Unix(), now)
 		if !ok {
 			continue
 		}
 		// Move the due time first. Whether the switch is issued or deliberately
 		// skipped, the next occurrence must be in the future or every tick would
 		// re-queue the same schedule.
-		next, err := nextClockOccurrence(now, ev.clock)
-		if err != nil {
-			s.Log.Warn("LED schedule has a bad clock", "mac", d.MAC, "at", ev.clock, "err", err)
+		onNext, offNext, ok := advanceLEDClocks(d, now)
+		if !ok {
+			s.Log.Warn("LED schedule has a bad clock", "mac", d.MAC, "on", d.LEDOnAt, "off", d.LEDOffAt)
 			continue
 		}
-		if err := s.Store.AdvanceLEDSchedule(ctx, d.MAC, ev.on, next.Unix()); err != nil {
-			s.Log.Warn("LED schedule not advanced", "mac", d.MAC, "err", err)
+		if err := s.Store.AdvanceLEDSchedules(ctx, d.MAC, onNext, offNext); err != nil {
+			s.Log.Warn("LED schedules not advanced", "mac", d.MAC, "err", err)
 			continue
 		}
 
-		pending, err := s.Store.HasPendingAction(ctx, d.MAC, proto.ActionLEDSet)
+		pending, err := s.Store.HasFreshAction(ctx, d.MAC, proto.ActionLEDSet, now.Unix())
 		if err != nil {
 			s.Log.Warn("pending LED action check failed", "mac", d.MAC, "err", err)
 			continue
@@ -157,37 +178,165 @@ func (s *Server) runDueLEDs(ctx context.Context) {
 			continue
 		}
 
-		a, err := s.Store.CreateAction(ctx, d.MAC, proto.ActionLEDSet, map[string]string{"state": ev.state})
+		if d.LEDState == target {
+			// The AP is already where the schedule wants it (it may have stayed
+			// on through the edge); no command is needed.
+			continue
+		}
+
+		a, err := s.Store.CreateAction(ctx, d.MAC, proto.ActionLEDSet, map[string]string{"state": target})
 		if err != nil {
 			s.Log.Warn("scheduled LED not queued", "mac", d.MAC, "err", err)
 			continue
 		}
-		s.Store.LogEvent(ctx, "led_scheduled", d.MAC, a.ID+" "+ev.state)
-		s.Log.Info("scheduled LED queued", "mac", d.MAC, "id", a.ID, "state", ev.state, "next", next)
+		s.Store.LogEvent(ctx, "led_scheduled", d.MAC, a.ID+" "+target)
+		s.Log.Info("scheduled LED queued", "mac", d.MAC, "id", a.ID, "state", target)
 	}
 }
 
-// earliestLEDEvent picks one due edge. If both were missed, the earlier one
-// runs this tick and the other stays due for the next tick; that keeps the
-// final state deterministic instead of relying on queue ordering.
-func earliestLEDEvent(d store.Device, now int64) (ledEvent, bool) {
-	var events []ledEvent
-	if d.LEDOnNextAt > 0 && d.LEDOnNextAt <= now {
-		events = append(events, ledEvent{at: d.LEDOnNextAt, on: true, state: "on", clock: d.LEDOnAt})
+// runLEDRepairs is the patrol pass. For every online AP with a complete on→off
+// window it derives the state that window implies right now and compares it
+// with the last confirmed hardware state. A mismatch is corrected immediately;
+// repeat failures back off. There is no stored "desired" state to go stale:
+// saving a window is enough, and a reboot or power cut is corrected on the next
+// pass.
+func (s *Server) runLEDRepairs(ctx context.Context) {
+	now := s.now()
+	devices, err := s.Store.ListLEDWindows(ctx, now.Unix(), int64(s.offlineAfter()/time.Second), 32)
+	if err != nil {
+		s.Log.Warn("LED patrol query failed", "err", err)
+		return
 	}
-	if d.LEDOffNextAt > 0 && d.LEDOffNextAt <= now {
-		events = append(events, ledEvent{at: d.LEDOffNextAt, on: false, state: "off", clock: d.LEDOffAt})
+	for _, d := range devices {
+		s.applyLEDWindow(ctx, d, now)
 	}
-	if len(events) == 0 {
-		return ledEvent{}, false
+}
+
+// applyLEDWindow compares one AP's confirmed LED state with the state its
+// window implies right now and queues a correction when they differ. The
+// minute patrol and the save handler share it, so a freshly saved window takes
+// effect at once instead of waiting for the next tick.
+func (s *Server) applyLEDWindow(ctx context.Context, d store.Device, now time.Time) {
+	target, ok := ledWindowState(now, d.LEDOnAt, d.LEDOffAt)
+	if !ok {
+		s.Log.Warn("LED window has a bad clock", "mac", d.MAC, "on", d.LEDOnAt, "off", d.LEDOffAt)
+		return
 	}
-	ev := events[0]
-	for _, e := range events[1:] {
-		// On a tie the off edge wins: leaving the LED dark is the safer
-		// outcome when two scheduled events collide.
-		if e.at < ev.at || (e.at == ev.at && !e.on) {
-			ev = e
+	if d.LEDState == target {
+		if err := s.Store.ResetLEDRepair(ctx, d.MAC); err != nil {
+			s.Log.Warn("LED repair not reset", "mac", d.MAC, "err", err)
 		}
+		return
 	}
-	return ev, true
+	if d.LEDRetryAt > now.Unix() {
+		return
+	}
+
+	pending, err := s.Store.HasFreshAction(ctx, d.MAC, proto.ActionLEDSet, now.Unix())
+	if err != nil {
+		s.Log.Warn("pending LED action check failed", "mac", d.MAC, "err", err)
+		return
+	}
+	if pending {
+		// A command that could still run is already on its way.
+		return
+	}
+
+	a, err := s.Store.CreateAction(ctx, d.MAC, proto.ActionLEDSet, map[string]string{"state": target})
+	if err != nil {
+		s.Log.Warn("LED repair not queued", "mac", d.MAC, "err", err)
+		return
+	}
+	attempt := d.LEDRetryCount + 1
+	next := now.Add(ledRetryDelay(attempt))
+	if err := s.Store.NoteLEDRepair(ctx, d.MAC, attempt, next.Unix()); err != nil {
+		s.Log.Warn("LED repair not recorded", "mac", d.MAC, "err", err)
+	}
+	// Log the first attempt, the one that crosses the warning threshold and
+	// then every tenth: a permanently broken AP stays visible without filling
+	// the event log.
+	if attempt == 1 || attempt == ledRepairWarnAfter || attempt%10 == 0 {
+		kind := "led_repair"
+		if attempt == ledRepairWarnAfter {
+			kind = "led_repair_stuck"
+		}
+		s.Store.LogEvent(ctx, kind, d.MAC, fmt.Sprintf("attempt %d, expected %s, id %s", attempt, target, a.ID))
+	}
+	s.Log.Info("LED repair queued", "mac", d.MAC, "id", a.ID, "state", target, "attempt", attempt)
+}
+
+// reconcileLED applies a just-saved window to one device immediately. An
+// offline AP is skipped: it will be corrected by the patrol once its heartbeat
+// returns.
+func (s *Server) reconcileLED(ctx context.Context, d store.Device) {
+	if d.State != store.StateAdopted || d.LEDOnAt == "" || d.LEDOffAt == "" {
+		return
+	}
+	now := s.now()
+	if d.LastSeen < now.Unix()-int64(s.offlineAfter()/time.Second) {
+		return
+	}
+	s.applyLEDWindow(ctx, d, now)
+}
+
+// ledDueTarget picks the state the schedule expects right now. With both clocks
+// set the current window decides, so a device returning after a long outage
+// converges on today's state in one command instead of replaying every missed
+// edge. With a single clock only the due edge carries intent.
+func ledDueTarget(d store.Device, onDue, offDue bool, now time.Time) (string, bool) {
+	if d.LEDOnAt != "" && d.LEDOffAt != "" {
+		return ledWindowState(now, d.LEDOnAt, d.LEDOffAt)
+	}
+	if d.LEDOnAt != "" && onDue {
+		return "on", true
+	}
+	if d.LEDOffAt != "" && offDue {
+		return "off", true
+	}
+	return "", false
+}
+
+// ledWindowState returns on when now falls inside the daily on→off window. An
+// overnight schedule (on later than off) wraps past midnight.
+func ledWindowState(now time.Time, onAt, offAt string) (string, bool) {
+	onH, onM, err := parseClock(onAt)
+	if err != nil {
+		return "", false
+	}
+	offH, offM, err := parseClock(offAt)
+	if err != nil {
+		return "", false
+	}
+	nowMin := now.Hour()*60 + now.Minute()
+	onMin, offMin := onH*60+onM, offH*60+offM
+	on := nowMin >= onMin && nowMin < offMin
+	if onMin > offMin {
+		on = nowMin >= onMin || nowMin < offMin
+	}
+	if on {
+		return "on", true
+	}
+	return "off", true
+}
+
+// advanceLEDClocks moves both configured edges to their next occurrence after
+// now. Both are advanced together: replaying a stale pair of opposite edges is
+// what leaves the final state dependent on command ordering.
+func advanceLEDClocks(d store.Device, now time.Time) (onNext, offNext int64, ok bool) {
+	onNext, offNext = d.LEDOnNextAt, d.LEDOffNextAt
+	if d.LEDOnAt != "" {
+		t, err := nextClockOccurrence(now, d.LEDOnAt)
+		if err != nil {
+			return 0, 0, false
+		}
+		onNext = t.Unix()
+	}
+	if d.LEDOffAt != "" {
+		t, err := nextClockOccurrence(now, d.LEDOffAt)
+		if err != nil {
+			return 0, 0, false
+		}
+		offNext = t.Unix()
+	}
+	return onNext, offNext, true
 }

@@ -1158,8 +1158,10 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
       <div class="panel">
         <h2>状态 LED</h2>
         <p class="note">
-          「开」只点亮绿色运行灯，避免 RGB 变白。定时按控制器本地时区下发，离线 AP 跳过本次。
-          表格只显示已启用定时的设备：选择设备后「新增计划」添加定时，已启用的行可直接修改或删除。
+          「开」只点亮绿色运行灯，避免 RGB 变白。定时按控制器本地时区下发。
+          AP 每次心跳回报实际灯态；保存定时后立即按当前窗口核对一次，此后每分钟巡查，
+          时间落入范围且灯态不一致时立即补发。离线、重启或结果丢失都会自动纠正，
+          多次失败会标为「异常」。表格只显示已启用定时的设备。
         </p>
         <div class="act-row">
           <div class="act-text">立即操作<small>选中设备后点击，等待 AP 下次心跳执行</small></div>
@@ -1175,10 +1177,10 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
         </div>
         <table>
           <thead>
-            <tr><th>设备</th><th>定时开</th><th>定时关</th><th>下次切换</th><th>操作</th></tr>
+            <tr><th>设备</th><th>定时开</th><th>定时关</th><th>下次切换</th><th>执行状态</th><th>操作</th></tr>
           </thead>
           <tbody id="led-status">
-            <tr><td colspan="5" class="empty">等待 AP 上线…</td></tr>
+            <tr><td colspan="6" class="empty">等待 AP 上线…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1779,6 +1781,13 @@ const clientDetail = $('client-detail');
 const msg = $('msg');
 
 let apNames = {};   // ap_mac → hostname
+
+// 设备下拉项文案：同主机名（同型号）有多台时附 MAC，避免无法区分
+function deviceOptionLabel(dev, list) {
+  const name = dev.hostname || dev.mac;
+  if (!dev.hostname) return name;
+  return list.filter(d => d.hostname === dev.hostname).length > 1 ? name + ' · ' + dev.mac : name;
+}
 
 function ago(ts) {
   if (!ts) return '–';
@@ -2430,7 +2439,7 @@ function fillRebootPicker(list) {
   for (const dev of candidates) {
     const o = document.createElement('option');
     o.value = dev.mac;
-    o.textContent = dev.hostname || dev.mac;
+    o.textContent = deviceOptionLabel(dev, candidates);
     sel.appendChild(o);
   }
   if (candidates.some(x => x.mac === prev)) sel.value = prev;
@@ -2634,7 +2643,7 @@ function fillLEDPicker(list) {
   for (const dev of adopted) {
     const o = document.createElement('option');
     o.value = dev.mac;
-    o.textContent = dev.hostname || dev.mac;
+    o.textContent = deviceOptionLabel(dev, adopted);
     sel.appendChild(o);
   }
   if (!adopted.some(x => x.mac === ledDeviceMac)) ledDeviceMac = adopted.length ? adopted[0].mac : '';
@@ -2661,7 +2670,7 @@ function fillLEDAddPicker(list) {
   for (const dev of candidates) {
     const o = document.createElement('option');
     o.value = dev.mac;
-    o.textContent = dev.hostname || dev.mac;
+    o.textContent = deviceOptionLabel(dev, candidates);
     sel.appendChild(o);
   }
   if (candidates.some(x => x.mac === prev)) sel.value = prev;
@@ -2675,21 +2684,67 @@ function renderLEDStatus(list) {
   const enabledList = adopted.filter(d => d.led_on_at || d.led_off_at);
   body.textContent = '';
   if (!enabledList.length && !ledDraft) {
-    body.innerHTML = '<tr><td colspan="5" class="empty">暂无已启用的 LED 定时；选择设备后点「新增计划」</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="empty">暂无已启用的 LED 定时；选择设备后点「新增计划」</td></tr>';
     return;
   }
-  for (const dev of enabledList) body.appendChild(ledRow(dev, true));
+  for (const dev of enabledList) body.appendChild(ledRow(dev, true, list));
   if (ledDraft) {
     const dev = adopted.find(d => d.mac === ledDraft.mac);
-    if (dev && !(dev.led_on_at || dev.led_off_at)) body.appendChild(ledRow(dev, false));
+    if (dev && !(dev.led_on_at || dev.led_off_at)) body.appendChild(ledRow(dev, false, list));
     else ledDraft = null; // 该设备已启用或已下线，草稿作废
   }
 }
 
-function ledRow(dev, enabled) {
+// 执行状态：对比控制器期望灯态与 AP 回报/指令确认的实际灯态，
+// 展示自动补发与巡查整改结果（离线、过期、结果丢失都会在这里体现）。
+// 按当前时间与定时窗口计算此刻应有的灯态；只有同时设置开/关才构成时段。
+function ledWindowTarget(dev) {
+  const parse = (v) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(v || '');
+    return m ? (+m[1]) * 60 + (+m[2]) : -1;
+  };
+  if (!dev.led_on_at || !dev.led_off_at) return '';
+  const on = parse(dev.led_on_at), off = parse(dev.led_off_at);
+  if (on < 0 || off < 0 || on === off) return '';
+  const now = new Date();
+  const cur = now.getHours() * 60 + now.getMinutes();
+  const inside = on < off ? (cur >= on && cur < off) : (cur >= on || cur < off);
+  return inside ? 'on' : 'off';
+}
+
+function ledStatusBadge(dev) {
+  const target = ledWindowTarget(dev);
+  const actual = dev.led_state || '';
+  const retry = dev.led_retry_count || 0;
+  const badge = document.createElement('span');
+  let cls = 'offline';
+  let text = '—';
+  if (target) {
+    if (actual === target) {
+      cls = 'adopted'; text = '已生效';
+    } else if (retry >= 5) {
+      cls = 'failed'; text = '异常';
+    } else {
+      cls = 'pending'; text = '待补发';
+    }
+  }
+  badge.className = 'badge ' + cls;
+  badge.textContent = text;
+  const hint = [
+    target ? ('当前应：' + (target === 'on' ? '开' : '关')) : '定时：未构成开/关时段，仅到点执行',
+    '实际：' + (actual === 'on' ? '开' : actual === 'off' ? '关' : '未回报'),
+  ];
+  if (retry > 0) hint.push('补发尝试：' + retry + ' 次');
+  if (dev.led_state_at) hint.push('上次回报：' + new Date(dev.led_state_at * 1000).toLocaleString());
+  if (dev.led_retry_at) hint.push('下次补发：' + new Date(dev.led_retry_at * 1000).toLocaleString());
+  badge.title = hint.join('；');
+  return badge;
+}
+
+function ledRow(dev, enabled, list) {
   const tr = document.createElement('tr');
   const name = document.createElement('td');
-  name.textContent = dev.hostname || dev.mac;
+  name.textContent = deviceOptionLabel(dev, list || [dev]);
   name.title = dev.mac;
   tr.appendChild(name);
 
@@ -2720,6 +2775,10 @@ function ledRow(dev, enabled) {
   next.textContent = parts.length ? parts.join('，') : '–';
   next.style.whiteSpace = 'normal';
   tr.appendChild(next);
+
+  const status = document.createElement('td');
+  status.appendChild(ledStatusBadge(dev));
+  tr.appendChild(status);
 
   const ops = document.createElement('td');
   ops.className = 'actions';
@@ -5292,7 +5351,7 @@ async function loadPorts() {
     for (const dev of deviceCache) {
       const o = document.createElement('option');
       o.value = dev.mac;
-      o.textContent = (dev.hostname || dev.mac) + (dev.state === 'adopted' ? '' : '（未采纳）');
+      o.textContent = deviceOptionLabel(dev, deviceCache) + (dev.state === 'adopted' ? '' : '（未采纳）');
       sel.appendChild(o);
     }
     if (portDeviceMac && deviceCache.some(x => x.mac === portDeviceMac)) sel.value = portDeviceMac;
@@ -6236,7 +6295,7 @@ async function loadWireless() {
     for (const dev of ordered) {
       const o = document.createElement('option');
       o.value = dev.mac;
-      o.textContent = (dev.hostname || dev.mac) + (dev.state === 'adopted' ? '' : '（未采纳）');
+      o.textContent = deviceOptionLabel(dev, deviceCache) + (dev.state === 'adopted' ? '' : '（未采纳）');
       sel.appendChild(o);
     }
     if (wlDeviceMac && deviceCache.some(x => x.mac === wlDeviceMac)) sel.value = wlDeviceMac;
@@ -6977,7 +7036,7 @@ function fillDiagDevices(devices) {
   const keep = sel.value || diagMAC;
   const opts = (devices || []).map(d => ({
     value: d.mac,
-    text: (d.hostname || d.mac) + (d.online ? '' : '（离线）'),
+    text: deviceOptionLabel(d, devices || []) + (d.online ? '' : '（离线）'),
   }));
   if (!opts.length) opts.push({ value: '', text: '暂无设备' });
   // 每 5 秒重建 option 会让展开的下拉跳动；只有设备集合真的变了才重绘。

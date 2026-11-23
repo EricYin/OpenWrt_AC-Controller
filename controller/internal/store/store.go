@@ -91,6 +91,15 @@ type Device struct {
 	LEDOffAt     string `json:"led_off_at,omitempty"`
 	LEDOnNextAt  int64  `json:"led_on_next_at,omitempty"`
 	LEDOffNextAt int64  `json:"led_off_next_at,omitempty"`
+	// LEDState is the last confirmed actual state, reported by the AP (or
+	// inferred from a completed led_set). The patrol loop derives the expected
+	// state from the schedule window and re-sends the command when they differ.
+	LEDState   string `json:"led_state,omitempty"`
+	LEDStateAt int64  `json:"led_state_at,omitempty"`
+	// LEDRetryCount/LEDRetryAt drive the repair backoff: an AP that keeps
+	// failing or dropping the command is retried less and less often.
+	LEDRetryCount int   `json:"led_retry_count,omitempty"`
+	LEDRetryAt    int64 `json:"led_retry_at,omitempty"`
 	// GroupID is the AP group this device belongs to. The group carries the
 	// template for its members; an adopted device whose group template differs
 	// from TemplateID has a pending assignment until it is pushed.
@@ -174,6 +183,10 @@ CREATE TABLE IF NOT EXISTS devices (
 	led_off_at TEXT NOT NULL DEFAULT '',
 	led_on_next_at INTEGER NOT NULL DEFAULT 0,
 	led_off_next_at INTEGER NOT NULL DEFAULT 0,
+	led_state  TEXT NOT NULL DEFAULT '',
+	led_state_at INTEGER NOT NULL DEFAULT 0,
+	led_retry_count INTEGER NOT NULL DEFAULT 0,
+	led_retry_at INTEGER NOT NULL DEFAULT 0,
 	group_id   TEXT NOT NULL DEFAULT '',
 	last_seen  INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL DEFAULT 0
@@ -430,6 +443,10 @@ CREATE TABLE IF NOT EXISTS settings (
 		{"led_off_at", `ALTER TABLE devices ADD COLUMN led_off_at TEXT NOT NULL DEFAULT ''`},
 		{"led_on_next_at", `ALTER TABLE devices ADD COLUMN led_on_next_at INTEGER NOT NULL DEFAULT 0`},
 		{"led_off_next_at", `ALTER TABLE devices ADD COLUMN led_off_next_at INTEGER NOT NULL DEFAULT 0`},
+		{"led_state", `ALTER TABLE devices ADD COLUMN led_state TEXT NOT NULL DEFAULT ''`},
+		{"led_state_at", `ALTER TABLE devices ADD COLUMN led_state_at INTEGER NOT NULL DEFAULT 0`},
+		{"led_retry_count", `ALTER TABLE devices ADD COLUMN led_retry_count INTEGER NOT NULL DEFAULT 0`},
+		{"led_retry_at", `ALTER TABLE devices ADD COLUMN led_retry_at INTEGER NOT NULL DEFAULT 0`},
 		{"group_id", `ALTER TABLE devices ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`},
 		{"radio_overrides", `ALTER TABLE devices ADD COLUMN radio_overrides TEXT NOT NULL DEFAULT ''`},
 	} {
@@ -674,7 +691,7 @@ WHERE mac = ? AND enrollment_id = ? AND state = 'adopted'`, SettingManagementKey
 }
 
 // deviceColumns keeps SELECT lists and Scan order in one place.
-const deviceColumns = `mac, model, firmware, agent_version, ip, hostname, state, template_id, config_rev, enrollment_id, applied_rev, sync_state, sync_message, sync_at, steering, last_seen, created_at, network_params, radio_overrides, fw_target, fw_state, fw_message, fw_at, uptime, reboot_period_days, reboot_at, reboot_next_at, reboot_weekday, reboot_monthday, led_on_at, led_off_at, led_on_next_at, led_off_next_at, group_id, wifi_caps, steer_stats`
+const deviceColumns = `mac, model, firmware, agent_version, ip, hostname, state, template_id, config_rev, enrollment_id, applied_rev, sync_state, sync_message, sync_at, steering, last_seen, created_at, network_params, radio_overrides, fw_target, fw_state, fw_message, fw_at, uptime, reboot_period_days, reboot_at, reboot_next_at, reboot_weekday, reboot_monthday, led_on_at, led_off_at, led_on_next_at, led_off_next_at, led_state, led_state_at, led_retry_count, led_retry_at, group_id, wifi_caps, steer_stats`
 
 func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 	var d Device
@@ -683,8 +700,9 @@ func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 		&d.SyncState, &d.SyncMessage, &d.SyncAt, &d.Steering, &d.LastSeen, &d.CreatedAt,
 		&d.NetworkParams, &d.RadioOverrides, &d.FwTarget, &d.FWState, &d.FWMessage, &d.FWAt, &d.Uptime,
 		&d.RebootPeriodDays, &d.RebootAt, &d.RebootNextAt, &d.RebootWeekday, &d.RebootMonthday,
-		&d.LEDOnAt, &d.LEDOffAt, &d.LEDOnNextAt, &d.LEDOffNextAt, &d.GroupID,
-		&d.WifiCaps, &d.SteerStats)
+		&d.LEDOnAt, &d.LEDOffAt, &d.LEDOnNextAt, &d.LEDOffNextAt,
+		&d.LEDState, &d.LEDStateAt, &d.LEDRetryCount, &d.LEDRetryAt,
+		&d.GroupID, &d.WifiCaps, &d.SteerStats)
 	return d, err
 }
 
@@ -739,7 +757,9 @@ func (s *Store) MarkAdopted(ctx context.Context, mac, templateID string, rev int
 // kept: re-adopting continues from the last revision instead of restarting at 1,
 // so an AP never sees two different packages sharing the same rev.
 func (s *Store) Release(ctx context.Context, mac string) error {
-	const q = `UPDATE devices SET state = ?, template_id = '' WHERE mac = ?`
+	const q = `UPDATE devices SET state = ?, template_id = '',
+		led_retry_count = 0, led_retry_at = 0
+		WHERE mac = ?`
 	res, err := s.db.ExecContext(ctx, q, StatePending, mac)
 	if err != nil {
 		return fmt.Errorf("release %s: %w", mac, err)

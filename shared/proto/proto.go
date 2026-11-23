@@ -131,6 +131,13 @@ type Hello struct {
 	// the agent could not read it (or does not report it), which the controller
 	// must not confuse with "just booted".
 	Uptime int64 `json:"uptime,omitempty"`
+	// LEDState is the status LED as measured on the AP (on|off). Empty means the
+	// agent could not read it, or is too old to report it; the controller then
+	// falls back to the outcome of its own led_set commands.
+	//
+	// Optional and additive on purpose: omitting it keeps Hello compatible with
+	// older agents, and older controllers ignore the unknown field.
+	LEDState string `json:"led_state,omitempty"`
 	// Actions carries the outcome of commands the controller handed down in a
 	// previous HelloReply. Nil means this agent does not support actions; an
 	// empty list means it supports them and has nothing new to report.
