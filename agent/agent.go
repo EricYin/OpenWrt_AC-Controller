@@ -289,6 +289,15 @@ func discoverControllers(ctx context.Context, cfg Config, announce proto.Discove
 			continue
 		}
 		addr := fmt.Sprintf("%s:%d", host, offer.HTTPPort)
+		// A broadcast offer is unauthenticated: any device on the LAN can send
+		// one. Accepting its address blindly would let a spoofer point the AP at
+		// an unreachable or hostile host. Same-address offers are trusted; a
+		// different address has to prove it is the controller that answered.
+		if !offerHostTrusted(addr, host, peer, offer.ACID, offer.SigningKey) {
+			log.Warn("ignoring discovery offer with untrusted address",
+				"addr", addr, "peer", peer.String(), "ac_id", offer.ACID)
+			continue
+		}
 		if visit != nil {
 			visit(addr)
 			continue
@@ -296,6 +305,69 @@ func discoverControllers(ctx context.Context, cfg Config, announce proto.Discove
 		log.Info("controller discovered", "addr", addr, "ac_id", offer.ACID)
 		return addr, offer, nil
 	}
+}
+
+// offerHostTrusted reports whether an offer's advertised address may be used.
+// An address equal to the datagram's source is taken at face value (the normal
+// case: the offer comes from the controller itself). Anything else — a
+// different interface, a NAT'd address, or a spoofer — must answer a health
+// probe with the same AC identity and signing key the offer claimed.
+func offerHostTrusted(addr, host string, peer *net.UDPAddr, acID, signingKey string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil || !routableUnicast(ip) {
+		return false
+	}
+	if peer != nil && ip.Equal(peer.IP) {
+		return true
+	}
+	return probeControllerIdentity(addr, acID, signingKey)
+}
+
+// routableUnicast rejects the address classes a controller can never legitimately
+// advertise: loopback, unspecified, multicast and link-local.
+func routableUnicast(ip net.IP) bool {
+	return !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast() &&
+		!ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() &&
+		!ip.IsInterfaceLocalMulticast()
+}
+
+// probeControllerIdentity asks the advertised address to identify itself. The
+// health endpoint is unauthenticated on purpose (an AP has to reach it before
+// it has credentials), and it returns exactly the two values an offer carries.
+func probeControllerIdentity(addr, acID, signingKey string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/v1/health", nil)
+	if err != nil {
+		return false
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var h struct {
+		Status string `json:"status"`
+		ACID   string `json:"ac_id"`
+		PubKey string `json:"pubkey"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&h); err != nil {
+		return false
+	}
+	if h.Status != "ok" {
+		return false
+	}
+	if acID != "" && !strings.EqualFold(h.ACID, acID) {
+		return false
+	}
+	if signingKey != "" && !strings.EqualFold(h.PubKey, signingKey) {
+		return false
+	}
+	return true
 }
 
 func discoverySourceIP(addr *net.UDPAddr) string {
