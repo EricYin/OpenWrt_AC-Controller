@@ -193,6 +193,21 @@ msgstr "控制器的 host:port。留空则通过本地网段的 UDP 广播自动
 msgid "Shared secret"
 msgstr "共享密钥"
 
+msgid "Legacy authentication"
+msgstr "兼容旧版认证"
+
+msgid "Automatic adoption uses this AP's device identity and needs no shared secret. Enable only for an older controller."
+msgstr "自动采纳使用本 AP 的设备身份，无需共享密钥。仅连接旧版控制器时开启。"
+
+msgid "Only used by legacy authentication. Turn off legacy authentication to use automatic adoption."
+msgstr "仅用于旧版认证。关闭「兼容旧版认证」即可使用自动采纳。"
+
+msgid "Starts the agent and enables it at boot when you save the settings."
+msgstr "保存设置后启动 agent，并设为开机自启。"
+
+msgid "Settings saved. The agent now follows the enable switch."
+msgstr "设置已保存，agent 已按启用开关生效。"
+
 msgid "Reset management"
 msgstr "重置纳管"
 

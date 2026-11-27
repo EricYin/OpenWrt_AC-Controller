@@ -266,9 +266,9 @@ func (a *Agent) enroll(ctx context.Context, onClaim func(managementBinding) erro
 		if resp.StatusCode == http.StatusConflict {
 			// The controller kept an enrollment binding this AP can no longer
 			// prove: a reflash or board swap replaced the device key and the
-			// reset generation restarted at zero. Release cannot clear it;
-			// only deleting the device record on the controller can.
-			return errors.New("this MAC is already registered to another AP identity on the controller (the AP was re-initialised; delete this device on the controller to allow re-enrollment)")
+			// reset generation restarted at zero. An operator must authorize
+			// replacement by releasing or deleting the device on the controller.
+			return errors.New("this MAC is already registered to another AP identity on the controller (release this device on the controller, wait for re-enrollment, then adopt it again)")
 		}
 		return fmt.Errorf("register AP identity: HTTP %d", resp.StatusCode)
 	}

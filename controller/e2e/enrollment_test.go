@@ -184,17 +184,7 @@ func TestDeleteDeviceRecoversReflashedAP(t *testing.T) {
 		t.Fatalf("reflashed AP: %v, want the already-registered conflict", err)
 	}
 
-	// Releasing is not enough; deleting the record clears the binding.
-	resp := ac.post("/api/v1/devices/"+apMAC+"/release", "")
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("release: HTTP %d", resp.StatusCode)
-	}
-	if err := b.Step(ctx); err == nil || !strings.Contains(err.Error(), "already registered") {
-		t.Fatalf("release did not keep the conflict: %v", err)
-	}
-
-	resp = ac.delete("/api/v1/devices/" + apMAC)
+	resp := ac.delete("/api/v1/devices/" + apMAC)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("delete device: HTTP %d", resp.StatusCode)
@@ -217,6 +207,60 @@ func TestDeleteDeviceRecoversReflashedAP(t *testing.T) {
 	}
 	if b.State().AppliedRev != 1 {
 		t.Fatal("readoption after delete did not apply revision 1")
+	}
+}
+
+func TestReleaseRecoversReflashedAP(t *testing.T) {
+	t.Setenv("AC_SECRET", "")
+	ac := newACWithSecret(t, "")
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg, _, _ := newAgentConfig(t, ac)
+	a, err := agent.New(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ac.adopt(t, apMAC)
+	if err := a.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reflashCfg, _, _ := newAgentConfig(t, ac)
+	b, err := agent.New(reflashCfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Step(ctx); err == nil || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("reflashed AP before release: %v", err)
+	}
+	resp := ac.post("/api/v1/devices/"+apMAC+"/release", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("release: HTTP %d", resp.StatusCode)
+	}
+	if err := b.Step(ctx); err != nil {
+		t.Fatalf("re-enroll after release: %v", err)
+	}
+	if d := ac.device(t, apMAC); d.State != store.StatePending || d.ConfigRev != 1 {
+		t.Fatalf("replacement must await adoption and retain revisions: %+v", d)
+	}
+	if b.State().ManagementKey != "" {
+		t.Fatal("replacement received credentials before adoption")
+	}
+	ac.adopt(t, apMAC)
+	if err := b.Step(ctx); err != nil {
+		t.Fatalf("apply after readoption: %v", err)
+	}
+	if b.State().AppliedRev != 2 {
+		t.Fatal("readoption after release did not continue at revision 2")
+	}
+	if err := b.Step(ctx); err != nil {
+		t.Fatalf("replacement heartbeat: %v", err)
+	}
+	if err := a.Step(ctx); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("old identity still authenticated: %v", err)
 	}
 }
 

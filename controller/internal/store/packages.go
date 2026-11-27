@@ -43,9 +43,9 @@ func (s *Store) CommitAdoption(ctx context.Context, d Device, templateID string,
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE devices SET state = ?, template_id = ?, config_rev = ?, config_sha = ?
-WHERE mac = ? AND enrollment_id = ? AND config_rev = ? AND state = ?`,
-		StateAdopted, templateID, rev, digest, d.MAC, d.EnrollmentID, d.ConfigRev, d.State)
+	res, err := tx.ExecContext(ctx, `UPDATE devices SET state = ?, template_id = ?, config_rev = ?, config_sha = ?, enrollment_released = 0
+WHERE mac = ? AND enrollment_id = ? AND enrollment_public = ? AND config_rev = ? AND state = ?`,
+		StateAdopted, templateID, rev, digest, d.MAC, d.EnrollmentID, d.EnrollmentPublic, d.ConfigRev, d.State)
 	if err != nil {
 		return err
 	}

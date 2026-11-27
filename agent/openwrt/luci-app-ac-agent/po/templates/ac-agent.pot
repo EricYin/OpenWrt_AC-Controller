@@ -194,6 +194,21 @@ msgstr ""
 msgid "Shared secret"
 msgstr ""
 
+msgid "Legacy authentication"
+msgstr ""
+
+msgid "Automatic adoption uses this AP's device identity and needs no shared secret. Enable only for an older controller."
+msgstr ""
+
+msgid "Only used by legacy authentication. Turn off legacy authentication to use automatic adoption."
+msgstr ""
+
+msgid "Starts the agent and enables it at boot when you save the settings."
+msgstr ""
+
+msgid "Settings saved. The agent now follows the enable switch."
+msgstr ""
+
 msgid "Reset management"
 msgstr ""
 

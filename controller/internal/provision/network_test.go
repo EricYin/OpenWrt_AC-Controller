@@ -63,6 +63,9 @@ func TestPreflightReportsAddressMove(t *testing.T) {
 	if pf.NewMgmt != "10.0.10.1" {
 		t.Errorf("new mgmt = %q, want the lan address", pf.NewMgmt)
 	}
+	if len(pf.ManagementInterfaces) != 1 || pf.ManagementInterfaces[0].Name != "lan" || pf.ManagementInterfaces[0].IPAddr[0] != "10.0.10.1/24" {
+		t.Fatalf("editable management interfaces = %+v", pf.ManagementInterfaces)
+	}
 }
 
 // The same template on a unit already reached at the managed address must not
@@ -109,6 +112,16 @@ func TestPreflightForAdoptUsesGivenTemplate(t *testing.T) {
 	}
 	if !pf.WillMove || pf.NewMgmt != "10.0.10.1" {
 		t.Errorf("preflight = %+v", pf)
+	}
+	if err := svc.Store.SetDeviceNetwork(context.Background(), ap1, `{"ipaddr":{"lan":["10.0.10.145/24"]}}`); err != nil {
+		t.Fatal(err)
+	}
+	pf, err = svc.Preflight(context.Background(), ap1, "net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pf.NewMgmt != "10.0.10.145" || len(pf.ManagementInterfaces) != 1 || pf.ManagementInterfaces[0].IPAddr[0] != "10.0.10.145/24" {
+		t.Fatalf("preflight after editing the address = %+v", pf)
 	}
 }
 

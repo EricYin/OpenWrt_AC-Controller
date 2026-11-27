@@ -179,11 +179,30 @@ function badge(text, color) {
 }
 
 function valueRow(title, value) {
-	return E('div', { class: 'cbi-value' }, [
-		E('label', { class: 'cbi-value-title' }, title),
-		E('div', { class: 'cbi-value-field' }, value)
+	return E('div', { class: 'ac-status-row' }, [
+		E('div', { class: 'ac-status-label' }, title),
+		E('div', { class: 'ac-status-value' }, value)
 	]);
 }
+
+/* Scope layout to this view: theme footer and float rules must not position
+ * status actions or make long error messages widen the card. */
+var PAGE_STYLE =
+	'.ac-agent-view{min-width:0;max-width:100%;}' +
+	'.ac-agent-view .ac-status-content{padding:16px 20px 20px;min-width:0;}' +
+	'.ac-agent-view .ac-status-row{display:grid;grid-template-columns:10rem minmax(0,1fr);gap:8px 16px;padding:10px 0;}' +
+	'.ac-agent-view .ac-status-label{opacity:.75;}' +
+	'.ac-agent-view .ac-status-value,.ac-agent-view .cbi-value-description{min-width:0;overflow-wrap:anywhere;white-space:normal;}' +
+	'.ac-agent-view .ac-status-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:20px;padding-top:16px;border-top:1px solid rgba(128,128,128,.25);}' +
+	'.ac-agent-view .ac-status-actions .cbi-button{float:none!important;position:static!important;margin:0!important;max-width:100%;white-space:normal;}' +
+	'.ac-agent-view .ac-status-actions .ac-reset-action{margin-left:auto!important;}' +
+	'.ac-agent-view .cbi-value-field{min-width:0;}' +
+	'.ac-agent-view input:not([type=checkbox]),.ac-agent-view select{box-sizing:border-box;max-width:100%;}' +
+	'@media(max-width:600px){' +
+	'.ac-agent-view .ac-status-content{padding:12px 16px 16px;}' +
+	'.ac-agent-view .ac-status-row{grid-template-columns:minmax(0,1fr);gap:4px;}' +
+	'.ac-agent-view .ac-status-actions .cbi-button{flex:1 1 10rem;}' +
+	'.ac-agent-view .ac-status-actions .ac-reset-action{margin-left:0!important;}}';
 
 return view.extend({
 	load: function() {
@@ -222,8 +241,23 @@ return view.extend({
 
 		var discovered = this.data.status;
 
+		/* This is a form-only switch. Turning it off removes the legacy secret,
+		 * so a hidden saved secret cannot keep selecting legacy authentication. */
+		o = s.option(form.Flag, '_legacy_auth', _('Legacy authentication'),
+			_('Automatic adoption uses this AP\'s device identity and needs no shared secret. Enable only for an older controller.'));
+		o.default = '0';
+		o.rmempty = false;
+		o.cfgvalue = function(section_id) {
+			return discovered && discovered.controller_override ? '0' : (uci.get('ac', section_id, 'secret') ? '1' : '0');
+		};
+		o.write = function(section_id, value) {
+			if (value !== '1') uci.unset('ac', section_id, 'secret');
+		};
+		if (discovered && discovered.controller_override) o.readonly = true;
+
 		o = s.option(form.Value, 'secret', _('Shared secret'),
-			_('Leave blank for automatic adoption. Only legacy enrollment uses a shared secret.'));
+			_('Only used by legacy authentication. Turn off legacy authentication to use automatic adoption.'));
+		o.depends('_legacy_auth', '1');
 		o.password = true;
 		if (discovered && discovered.controller_override) {
 			o.readonly = true;
@@ -314,7 +348,8 @@ return view.extend({
 
 		return m.render().then(function(formNode) {
 			/* Title, then the live status card, then the settings form. */
-			var wrapper = E('div', {}, [
+			var wrapper = E('div', { class: 'ac-agent-view' }, [
+				E('style', {}, PAGE_STYLE),
 				E('h2', { name: 'content' }, _('AC Agent')),
 				E('div', { class: 'cbi-map-descr' },
 					_('Shows whether this access point is under controller management, and how it reaches the controller.')),
@@ -381,8 +416,10 @@ return view.extend({
 			this.card.removeChild(this.card.firstChild);
 
 		this.card.appendChild(E('h3', {}, _('Control status')));
+		var content = E('div', { class: 'ac-status-content' });
+		this.card.appendChild(content);
 
-		this.card.appendChild(valueRow(_('Status'), [
+		content.appendChild(valueRow(_('Status'), [
 			badge(meta.label, meta.color),
 			E('div', { style: 'margin-top:6px;max-width:52em' }, stateHint(state, status))
 		]));
@@ -392,65 +429,54 @@ return view.extend({
 				? [ status.ac_addr, ' ', E('em', {}, '(' + sourceLabel(status.ac_addr_source) + ')') ]
 				: [ '-' ];
 
-			/* One click from "is the AP managed" to "manage it". The link opens in a
-			 * new tab so the AP's own page and its poll loop stay put. */
-			var url = controllerURL(status.ac_addr);
-			if (url)
-				controller.push(' ', E('a', {
-					class: 'btn cbi-button cbi-button-action',
-					href: url,
-					target: '_blank',
-					rel: 'noopener noreferrer',
-					title: _('Open the controller web interface in a new tab')
-				}, _('Open controller')));
+			content.appendChild(valueRow(_('Controller'), controller));
 
-			this.card.appendChild(valueRow(_('Controller'), controller));
-
-			this.card.appendChild(valueRow(_('Controller ID'), status.ac_id || '-'));
+			content.appendChild(valueRow(_('Controller ID'), status.ac_id || '-'));
 
 			var verdict = configVerdict(status);
-			this.card.appendChild(valueRow(_('Configuration'), [
+			content.appendChild(valueRow(_('Configuration'), [
 				badge(verdict.label, verdict.color),
-				E('div', { style: 'margin-top:6px' }, fmtRev(status))
+				status.applied_rev || status.desired_rev
+					? E('div', { style: 'margin-top:6px' }, fmtRev(status)) : ''
 			]));
 
 			/* Drift and the last apply error used to live only in the
 			 * controller's view or in a log file. Naming the changed files here
 			 * lets an operator decide whether to re-push without SSHing in. */
 			if (status.drift)
-				this.card.appendChild(valueRow(_('Configuration drift'),
+				content.appendChild(valueRow(_('Configuration drift'),
 					(status.drift_files && status.drift_files.length)
 						? _('changed on the AP: %s').format(status.drift_files.join(', '))
 						: _('files written by the controller no longer match the local copy')));
 
 			if (status.last_error)
-				this.card.appendChild(valueRow(_('Last error'), status.last_error));
+				content.appendChild(valueRow(_('Last error'), status.last_error));
 
-			this.card.appendChild(valueRow(_('Last heartbeat'),
+			content.appendChild(valueRow(_('Last heartbeat'),
 				status.last_hello_at
 					? [ fmtTime(status.last_hello_at), ' ', status.last_hello_ok ? _('(accepted)') : _('(failed)') ]
 					: '-'));
 
-			this.card.appendChild(valueRow(_('Access point'),
+			content.appendChild(valueRow(_('Access point'),
 				[ status.mac || '-', ' ', E('em', {}, status.model || '') ]));
 
 			if (status.steering)
-				this.card.appendChild(valueRow(_('Roaming steering'),
+				content.appendChild(valueRow(_('Roaming steering'),
 					_('running %s').format(steeringLabel(status.steering))));
 
 			if (status.bss)
-				this.card.appendChild(valueRow(_('BSS reported'), String(status.bss)));
+				content.appendChild(valueRow(_('BSS reported'), String(status.bss)));
 
 			if (status.peer_network) {
 				var link = [ status.peer_network, status.peer_device, status.peer_transport ].filter(Boolean).join(' / ');
-				this.card.appendChild(valueRow(_('Peer coordination'),
+				content.appendChild(valueRow(_('Peer coordination'),
 					_('%d APs, %d BSSes · %s').format(status.peer_aps || 0, status.peer_bss || 0, link)));
 			}
 
 			/* The version an operator can act on: binary version, the protocol it
 			 * speaks, and when it started. "agent 0.3.0" alone forced the reader
 			 * to guess which controller releases pair with it. */
-			this.card.appendChild(valueRow(_('Agent version'),
+			content.appendChild(valueRow(_('Agent version'),
 				[ 'ac-agent ', E('strong', {}, String(status.version || '-')),
 				  status.protocol_version
 					  ? ' ' + _('protocol v%d').format(status.protocol_version)
@@ -463,11 +489,11 @@ return view.extend({
 			 * version number it cannot verify. */
 			if (status.protocol_version &&
 					status.protocol_version !== INTERFACE_PROTOCOL)
-				this.card.appendChild(E('div', { class: 'alert-message warning' },
+				content.appendChild(E('div', { class: 'alert-message warning' },
 					_('The running agent speaks protocol v%d but this interface expects v%d. Upgrade luci-app-ac-agent and ac-agent together.')
 						.format(status.protocol_version, INTERFACE_PROTOCOL)));
 
-			this.card.appendChild(valueRow(_('Matching controller'),
+			content.appendChild(valueRow(_('Matching controller'),
 				status.protocol_version
 					? _('Requires an AC controller of v0.7.0 or newer (protocol version %d). Upgrade the controller and the agent together; a mismatched controller rejects the heartbeat or cannot parse it.')
 						.format(status.protocol_version)
@@ -476,30 +502,32 @@ return view.extend({
 			/* Shown whenever the last exchange failed for a reason the badge does
 			 * not already spell out (for instance a changed controller key). */
 			if (status.last_hello_error && state !== 'unreachable')
-				this.card.appendChild(E('div', { class: 'alert-message warning' },
+				content.appendChild(E('div', { class: 'alert-message warning' },
 					_('Last error: %s').format(status.last_hello_error)));
 		}
 
-		/* A bare flex row instead of cbi-page-actions. The stock themes give
-		 * that class negative margins meant for full-width page footers, and
-		 * argon pushes the buttons past the card edge even when the margins
-		 * are corrected inline. Owning the geometry keeps the row inside the
-		 * card in every theme, and flex-wrap lets the two buttons stack on a
-		 * narrow screen instead of clipping. */
-		this.card.appendChild(E('div', {
-			style: 'display:flex;justify-content:flex-end;align-items:center;' +
-				'gap:8px;flex-wrap:wrap;margin:14px 0 0;padding:0'
-		}, [
+		var actions = E('div', { class: 'ac-status-actions' });
+		var url = controllerURL(status && status.ac_addr);
+		if (url)
+			actions.appendChild(E('a', {
+				class: 'btn cbi-button cbi-button-action', href: url,
+				target: '_blank', rel: 'noopener noreferrer',
+				title: _('Open the controller web interface in a new tab')
+			}, _('Open controller')));
+		[
 			E('button', {
+				type: 'button',
 				class: 'btn cbi-button cbi-button-action',
 				click: ui.createHandlerFn(this, 'handleRestart')
 			}, _('Restart agent')),
 			E('button', {
-				class: 'btn cbi-button cbi-button-negative',
+				type: 'button',
+				class: 'btn cbi-button cbi-button-negative ac-reset-action',
 				style: 'background:#c62828;border-color:#c62828;color:#fff',
 				click: ui.createHandlerFn(this, 'handleResetManagement')
 			}, _('Reset management'))
-		]));
+		].forEach(function(button) { actions.appendChild(button); });
+		content.appendChild(actions);
 	},
 
 	/* Restarting runs one sync cycle immediately, which is what an operator wants

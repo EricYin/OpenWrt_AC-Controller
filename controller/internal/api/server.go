@@ -826,11 +826,8 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, d)
 }
 
-// handleDeleteDevice removes the device record entirely. Release keeps the
-// enrollment binding, so an AP that was re-initialised outside the controller
-// (reflash, board swap) can never re-enroll against it — enrollment rejects a
-// different device key with 409 and the operator has no way out. Deleting the
-// record clears the binding; the AP registers again as a new pending claim.
+// handleDeleteDevice removes the device record and its history entirely.
+// Release also permits re-enrollment, while retaining parameters and history.
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	mac, ok := pathMAC(w, r)
 	if !ok {

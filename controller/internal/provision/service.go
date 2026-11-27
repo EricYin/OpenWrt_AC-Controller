@@ -265,6 +265,9 @@ type Preflight struct {
 	WillMove    bool              `json:"will_move"`
 	NewMgmt     string            `json:"new_mgmt,omitempty"`
 	Conflicts   []AddressConflict `json:"conflicts,omitempty"`
+	// Resolved static interfaces let the confirmation edit the actual allocated
+	// address, including its mask, before the first adoption as well as repush.
+	ManagementInterfaces []model.Interface `json:"management_interfaces,omitempty"`
 }
 
 // AddressConflict is one management address a push would duplicate: the address
@@ -327,6 +330,9 @@ func (s *Service) Preflight(ctx context.Context, mac, templateID string) (Prefli
 		return pf, nil
 	}
 	for _, iface := range tpl.Bridge.Interfaces {
+		if iface.Proto == "static" && len(iface.IPAddr) > 0 {
+			pf.ManagementInterfaces = append(pf.ManagementInterfaces, iface)
+		}
 		for _, addr := range iface.IPAddr {
 			ip := addressOnly(addr)
 			if ip == "" || strings.Contains(ip, ":") {

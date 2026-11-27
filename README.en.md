@@ -230,14 +230,18 @@ apk add --allow-untrusted /tmp/*ac-agent*.apk
 
 To move an AP, open **LuCI → Control → AC Agent → Reset management**, then adopt it on the intended AC. The reset increments a persistent counter and keeps Wi-Fi, network settings and the device identity. When the original AC verifies the same identity with a newer counter, it returns the existing record to **Pending**, keeps history and expires queued commands. If the AP moves to an isolated VLAN before the original AC receives the new registration, that record stays offline. Over SSH, stop the agent, run `ac-agent reset-management`, then start the agent.
 
-### Generic firmware: configure the shared secret in LuCI
+If a reflashed AP reports that its MAC is registered to another identity, click **Release** for that device on the AC, wait for the AP to register again as **Pending**, then select a template and adopt it. Release preserves device parameters, history, and configuration revisions. The new identity cannot receive configuration before adoption; deleting the device record is unnecessary.
+
+### Legacy authentication: configure the shared secret in LuCI
+
+Current versions use device-identity adoption by default and require no shared secret. Enable the following compatibility settings only when using legacy shared-secret onboarding.
 
 1. In the AC web interface, open **AP Management → Shared secret**. Generate, save, and copy the secret. If one is already set, copy the existing value.
-2. On each AP, open **LuCI → Control → AC Agent → Controller connection**. Paste the value into **Shared secret** and click **Save & apply**.
+2. On each AP, open **LuCI → Control → AC Agent → Controller connection**, enable **Legacy authentication**, paste the value into the revealed **Shared secret** field, and click **Save & apply**. Turning compatibility off and saving removes the old secret and restores device-identity adoption.
 
 Leave **Controller address** empty on the same broadcast domain. Across routed networks, enter the AC's `host:port` (default `8090`). When the AP appears in the AC device overview, select a template and click **Adopt**.
 
-When upgrading, update the AC, AP agent, and LuCI package together, keep the AC data directory, and verify that both sides use the same shared secret. After changing it, update every AP so it can reconnect.
+When upgrading, update the AC, AP agent, and LuCI package together and keep the AC data directory. If continuing to use legacy authentication, verify that both sides use the same shared secret; after changing it, update every AP so it can reconnect. Device-identity adoption requires no manual shared-secret synchronization.
 
 For offline roaming, set `ac.agent.peer_network` on each AP to the logical OpenWrt network that reaches the other APs on the same management VLAN, and use the same peer key. That network might be `lan3` instead of the default `lan`. LuCI and `ac-agent status` show the resolved device, transport and peer AP/BSS counts; a successful AC heartbeat does not verify the peer path.
 

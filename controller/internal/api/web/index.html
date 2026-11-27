@@ -752,16 +752,18 @@ try{var __act=localStorage.getItem('ac_ui_theme');if(__act==='light'||__act==='d
   .ui-empty p { margin: 0; font-size: 12.5px; color: var(--muted); max-width: 420px; line-height: 1.7; }
   /* 危险操作二次确认 */
   .ui-confirm-mask { position: fixed; inset: 0; z-index: 95; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(6, 10, 16, .74); backdrop-filter: blur(3px); }
-  .ui-confirm { width: min(420px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); overflow: hidden; }
+  .ui-confirm { width: min(480px, 100%); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); overflow: hidden; }
   .ui-confirm-head { display: flex; align-items: center; gap: 10px; padding: 15px 18px; border-bottom: 1px solid var(--line-soft); }
   .ui-confirm-ic { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; flex: none; font-weight: 700; font-size: 13px; color: var(--danger); background: rgba(255, 122, 122, .12); border: 1px solid rgba(255, 122, 122, .3); }
   .ui-confirm-head b { font-size: 14.5px; }
   .ui-confirm-x { margin-left: auto; width: 26px; height: 26px; padding: 0; background: transparent; border: 0; color: var(--muted); font-size: 18px; }
   .ui-confirm-x:hover { background: var(--panel-2); color: var(--text); }
-  .ui-confirm-body { padding: 18px; }
+  .ui-confirm-body { padding: 18px; overflow-y: auto; min-height: 0; overflow-wrap: anywhere; }
   .ui-confirm-body p { margin: 0; font-size: 13.5px; line-height: 1.7; color: var(--text); }
   .ui-confirm-note { margin-top: 10px !important; font-size: 12.5px !important; color: var(--muted) !important; }
-  .ui-confirm-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 18px; border-top: 1px solid var(--line-soft); background: var(--bg); }
+  .ui-confirm-foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 13px 18px; flex-shrink: 0; border-top: 1px solid var(--line-soft); background: var(--bg); }
+  .ui-confirm-content:not(:empty) { margin-top: 16px; }
+  .ui-confirm-error { margin-top: 10px !important; color: var(--danger) !important; }
   @media (max-width: 767px) {
     .ui-topbar { gap: 8px; }
     .ui-top-right { width: 100%; margin-left: 0; }
@@ -2097,7 +2099,8 @@ function uiConfirm(text, opts) {
         + '<div class="ui-confirm-head"><span class="ui-confirm-ic">!</span><b class="ui-confirm-title">确认操作</b>'
         + '<button type="button" class="ui-confirm-x" aria-label="关闭">×</button></div>'
         + '<div class="ui-confirm-body"><p class="ui-confirm-text"></p>'
-        + '<p class="ui-confirm-note"></p></div>'
+        + '<div class="ui-confirm-content"></div><p class="ui-confirm-note"></p>'
+        + '<p class="ui-confirm-error" role="alert" hidden></p></div>'
         + '<div class="ui-confirm-foot"><button type="button" class="ui-btn ui-confirm-cancel">取消</button>'
         + '<button type="button" class="ui-btn ui-btn-danger ui-confirm-ok">确认执行</button></div></div>';
       document.body.appendChild(uiConfirmEl);
@@ -2107,6 +2110,11 @@ function uiConfirm(text, opts) {
     const noteEl = uiConfirmEl.querySelector('.ui-confirm-note');
     const okBtn = uiConfirmEl.querySelector('.ui-confirm-ok');
     const cancelBtn = uiConfirmEl.querySelector('.ui-confirm-cancel');
+    const contentEl = uiConfirmEl.querySelector('.ui-confirm-content');
+    const errorEl = uiConfirmEl.querySelector('.ui-confirm-error');
+    contentEl.replaceChildren(...(opts.content ? [opts.content] : []));
+    errorEl.hidden = true;
+    errorEl.textContent = '';
     title.textContent = opts.title || '确认操作';
     textEl.textContent = text;
     textEl.style.whiteSpace = 'pre-line';
@@ -2120,7 +2128,9 @@ function uiConfirm(text, opts) {
     uiConfirmEl.querySelectorAll('button').forEach((b) => { b.disabled = false; });
     uiConfirmEl.hidden = false;
     // done 收尾并兑现 Promise：cleanup 先解绑全部监听，避免二次触发。
-    const done = (v) => { cleanup(); resolve(v); };
+    let submitting = false;
+    const previousFocus = document.activeElement;
+    const done = (v) => { if (submitting) return; cleanup(); resolve(v); };
     const onKey = (e) => { if (e.key === 'Escape') done(false); };
     const onMask = (e) => { if (e.target === uiConfirmEl) done(false); };
     function cleanup() {
@@ -2131,8 +2141,24 @@ function uiConfirm(text, opts) {
       document.removeEventListener('keydown', onKey);
       const x = uiConfirmEl.querySelector('.ui-confirm-x');
       if (x) x.removeEventListener('click', onCancel);
+      if (previousFocus && previousFocus.isConnected) previousFocus.focus();
     }
-    function onOk() { done(true); }
+    async function onOk() {
+      if (submitting) return;
+      if (!opts.onConfirm) { done(true); return; }
+      submitting = true;
+      uiConfirmEl.querySelectorAll('button, input').forEach(b => { b.disabled = true; });
+      try {
+        const result = await opts.onConfirm();
+        submitting = false;
+        done(result === undefined ? true : result);
+      } catch (err) {
+        submitting = false;
+        errorEl.textContent = err.message || '保存失败，请重试';
+        errorEl.hidden = false;
+        uiConfirmEl.querySelectorAll('button, input').forEach(b => { b.disabled = false; });
+      }
+    }
     function onCancel() { done(false); }
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
@@ -2150,39 +2176,69 @@ function uiConfirm(text, opts) {
 //      占用方。默认方案是自动错开，冲突只在手填地址时出现；出现时仍然允许
 //      强制下发（返回 force），由操作员承担同网段地址争用的后果。
 async function confirmPush(mac, templateId) {
+  const base = '/api/v1/devices/' + encodeURIComponent(mac);
   const q = templateId ? '?template_id=' + encodeURIComponent(templateId) : '';
-  const pf = await api('GET', '/api/v1/devices/' + encodeURIComponent(mac) + '/preflight' + q);
-  const conflicts = (pf && pf.conflicts) || [];
-  const move = !!(pf && pf.will_move);
-  if (!conflicts.length && !move) return { ok: true, force: false };
+  let edited = false;
+  while (true) {
+    const pf = await api('GET', base + '/preflight' + q);
+    const conflicts = (pf && pf.conflicts) || [];
+    const move = !!(pf && pf.will_move);
+    if (!conflicts.length && !move && !edited) return { ok: true, force: false };
 
-  const blocks = [];
-  if (move) {
-    const from = pf.current_ip || '未知';
-    const to = pf.new_mgmt || (pf.target_addrs && pf.target_addrs[0]) || '未知';
-    blocks.push('本次下发会更换 AP 的管理地址。\n\n'
-      + '当前管理地址：' + from + '\n'
-      + '下发后地址：' + to + '\n\n'
-      + '下发瞬间 SSH/管理连接会中断，AP 将改用新地址上线。');
-  }
-  if (conflicts.length) {
-    blocks.push('以下地址已被其他设备占用，强制下发会造成同网段 IP 冲突：\n\n'
-      + conflicts.map(c => {
-        const owner = deviceCache.find(x => x.mac === c.device);
-        const who = owner && owner.hostname ? owner.hostname + '（' + c.device + '）' : c.device;
-        return '· ' + c.ip + ' —— 接口 ' + (c.interface || '?') + '，已被 ' + who + ' 使用';
-      }).join('\n'));
-  }
+    const blocks = [];
+    if (move) {
+      const from = pf.current_ip || '未知';
+      const to = pf.new_mgmt || (pf.target_addrs && pf.target_addrs[0]) || '未知';
+      blocks.push('本次下发会更换 AP 的管理地址。\n\n'
+        + '当前管理地址：' + from + '\n'
+        + '下发后地址：' + to + '\n\n'
+        + '下发瞬间 SSH/管理连接会中断，AP 将改用新地址上线。');
+    }
+    if (conflicts.length) {
+      blocks.push('以下地址已被其他设备占用，强制下发会造成同网段 IP 冲突：\n\n'
+        + conflicts.map(c => {
+          const owner = deviceCache.find(x => x.mac === c.device);
+          const who = owner && owner.hostname ? owner.hostname + '（' + c.device + '）' : c.device;
+          return '· ' + c.ip + ' —— 接口 ' + (c.interface || '?') + '，已被 ' + who + ' 使用';
+        }).join('\n'));
+    }
 
-  const ok = await uiConfirm(blocks.join('\n\n'), {
-    title: conflicts.length ? '管理地址冲突' : '管理地址将变更',
-    danger: conflicts.length > 0,
-    okText: conflicts.length ? '仍然强制下发' : '继续下发',
-    note: conflicts.length
-      ? '强制下发后两台设备会争用同一地址。若不想冲突，先在「端口 / 设备覆盖」里给本机填一个专属地址，再重新下发。'
-      : undefined
-  });
-  return { ok: ok, force: ok && conflicts.length > 0 };
+    if (!move && edited) {
+      blocks.unshift('地址已重新检查。\n\n当前管理地址：' + (pf.current_ip || '未知')
+        + '\n下发后地址：' + (pf.new_mgmt || pf.current_ip || '保持不变'));
+    }
+    const editor = document.createElement('div');
+    const dev = await api('GET', base);
+    const editDev = Object.assign({}, dev, { template_id: templateId || dev.template_id });
+    renderIPRows(editor, editDev, pf.management_interfaces);
+    const inputs = Array.from(editor.querySelectorAll('input[data-iface]'));
+    const original = inputs.map(i => i.value);
+    const changed = () => inputs.some((i, idx) => i.value !== original[idx]);
+    const okText = conflicts.length ? '仍然强制下发' : '继续下发';
+    editor.addEventListener('input', () => {
+      uiConfirmEl.querySelector('.ui-confirm-ok').textContent = changed() ? '保存地址并重新检查' : okText;
+    });
+
+    const ok = await uiConfirm(blocks.join('\n\n'), {
+      title: conflicts.length ? '管理地址冲突' : (move ? '管理地址将变更' : '确认下发配置'),
+      danger: conflicts.length > 0,
+      okText,
+      content: inputs.length ? editor : null,
+      note: (inputs.length ? '可直接修改上方接口地址，须带掩码（如 10.10.10.145/24）；留空恢复自动分配。修改后先保存并重新检查，再确认下发。保存后取消下发，地址覆盖仍会保留。' : '')
+        + (conflicts.length ? ' 强制下发后两台设备会争用同一地址。' : ''),
+      onConfirm: async () => {
+        if (!changed()) return true;
+        const ov = dev.network_params ? JSON.parse(dev.network_params) : {};
+        mergeIPInputs(ov, editor, original);
+        const updated = await api('PUT', base + '/network', ov);
+        const idx = deviceCache.findIndex(x => x.mac === mac);
+        if (idx >= 0) deviceCache[idx] = updated;
+        return 'recheck';
+      }
+    });
+    if (ok === 'recheck') { edited = true; continue; }
+    return { ok: ok, force: ok && conflicts.length > 0 };
+  }
 }
 
 async function act(action, mac, btn) {
@@ -2215,7 +2271,7 @@ async function act(action, mac, btn) {
       say(mac + ' 已重新下发，rev ' + res.rev
         + (decision.force ? '（强制：地址与其他设备重复）' : ''), 'ok');
     } else if (action === 'release') {
-      if (!(await uiConfirm('「解绑」会让设备回到待采纳状态，rev 与端口参数保留，需重新采纳才会继续接收配置。', { title: '解绑设备', okText: '确认解绑' }))) { say('已取消解绑'); return; }
+      if (!(await uiConfirm('「解绑」会让设备回到待采纳状态，并允许重刷后的 AP 重新登记身份。rev、设备参数与历史保留。请等 AP 重新登记后再采纳。', { title: '解绑设备', okText: '确认解绑' }))) { say('已取消解绑'); return; }
       await api('POST', base + '/release');
       say(mac + ' 已解绑，回到待采纳', 'ok');
     } else if (action === 'delete_device') {
@@ -2264,7 +2320,7 @@ const DEV_ACTIONS = [
   ['wifi_reload',   '重启无线',  '只重启 hostapd，客户端短暂断连后自动重连', false],
   ['reboot',        '重启 AP',  '整机重启，约 1 分钟内离线，期间无线全部中断', false],
   ['factory_reset', '恢复出厂',  '还原到被接管前的配置并解除采纳，当前 rev 失效，不可恢复', true],
-  ['release',       '解绑',     '解除采纳回到待采纳状态，rev 与端口参数保留', true],
+  ['release',       '解绑',     '回到待采纳并允许重新登记身份，rev、设备参数与历史保留', true],
   ['delete_device', '删除设备',  '删除该 MAC 的全部记录（含纳管绑定、客户端与遥测历史）。AP 整机重刷后报 409 无法重新纳管时用它恢复；AP 会在下个周期以新身份重新登记待采纳', true],
 ];
 const devActionsMask = $('dev-actions-mask');
@@ -5425,10 +5481,10 @@ function withDisplayPrefix(a, iface) {
 // 接口不写进覆盖，交给下发时的自动错开；填了就成了显式地址，冲突会在下发
 // 前的预检弹窗里报出来，而不是被静默改写。端口覆盖面板与「修改管理 IP」
 // 弹窗共用这里的行渲染与保存合并。
-function renderIPRows(host, dev) {
+function renderIPRows(host, dev, resolvedInterfaces) {
   host.innerHTML = '';
   const tpl = dev ? templates.find(t => t.id === dev.template_id) : null;
-  const ifaces = ((tpl && tpl.bridge && tpl.bridge.interfaces) || [])
+  const ifaces = (resolvedInterfaces || (tpl && tpl.bridge && tpl.bridge.interfaces) || [])
     .filter(i => i.proto === 'static' && (i.ipaddr || []).length);
   if (!dev || !ifaces.length) {
     const hint = document.createElement('span');
@@ -5444,15 +5500,15 @@ function renderIPRows(host, dev) {
   const current = ov.ipaddr || {};
   for (const i of ifaces) {
     const row = document.createElement('label');
-    row.style.cssText = 'display:flex;gap:10px;align-items:center;margin:6px 0';
+    row.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin:8px 0';
     const name = document.createElement('code');
     name.textContent = i.name;
     name.style.cssText = 'min-width:52px';
     const input = document.createElement('input');
     input.dataset.iface = i.name;
-    input.value = (current[i.name] || []).map(a => withDisplayPrefix(a, i)).join(', ');
+    input.value = (current[i.name] || (resolvedInterfaces ? i.ipaddr : [])).map(a => withDisplayPrefix(a, i)).join(', ');
     input.placeholder = '自动（模板 ' + (i.ipaddr || []).join(', ') + '）';
-    input.style.cssText = 'flex:1 1 auto;min-width:200px';
+    input.style.cssText = 'flex:1 1 200px;min-width:0;max-width:100%';
     row.append(name, input);
     host.appendChild(row);
   }
@@ -5463,8 +5519,12 @@ function renderIPRows(host, dev) {
 // ov 并返回；host 里没有输入框时不动 ov。每个非空条目必须带 /掩码（统一
 // 要求：裸地址会继承模板 netmask，模板未声明时 netifd 按 /32 兜底）——
 // 这里做快速拦截，精确校验由服务端 PUT 时的 ParseCIDR 兜底。
-function mergeIPInputs(ov, host) {
-  const ipInputs = Array.from(host.querySelectorAll('input[data-iface]'));
+function mergeIPInputs(ov, host, originalValues) {
+  // A preflight editor displays effective automatic addresses. Editing one
+  // interface must not turn every other automatic address into an override.
+  const ipInputs = Array.from(host.querySelectorAll('input[data-iface]'))
+    .filter((inp, idx) => !originalValues || inp.value !== originalValues[idx]
+      || (ov.ipaddr && Object.prototype.hasOwnProperty.call(ov.ipaddr, inp.dataset.iface)));
   if (!ipInputs.length) return ov;
   const ipaddr = Object.assign({}, ov.ipaddr || {});
   for (const inp of ipInputs) {

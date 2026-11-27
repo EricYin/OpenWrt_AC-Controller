@@ -234,6 +234,9 @@ func TestPreflightShowsStaggeredAddress(t *testing.T) {
 	if pf.NewMgmt != "10.0.10.2" {
 		t.Errorf("new mgmt = %q, want 10.0.10.2", pf.NewMgmt)
 	}
+	if len(pf.ManagementInterfaces) != 1 || pf.ManagementInterfaces[0].IPAddr[0] != "10.0.10.2/24" {
+		t.Fatalf("editor must show the allocated address with its prefix: %+v", pf.ManagementInterfaces)
+	}
 }
 
 // Allocation order: base itself when free, then upward, then wrap past the

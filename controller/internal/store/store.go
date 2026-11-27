@@ -36,7 +36,8 @@ type Device struct {
 	// package has ever been produced.
 	ConfigRev int `json:"config_rev"`
 	// Internal binding snapshot used when committing a generated package.
-	EnrollmentID string `json:"-"`
+	EnrollmentID     string `json:"-"`
+	EnrollmentPublic string `json:"-"`
 	// AppliedRev is the newest revision the AP reported as applied.
 	AppliedRev int `json:"applied_rev"`
 	// ConfigSHA is the SHA-256 of the package generated for ConfigRev, and
@@ -209,6 +210,7 @@ CREATE TABLE IF NOT EXISTS devices (
 	enrollment_public TEXT NOT NULL DEFAULT '',
 	enrollment_id TEXT NOT NULL DEFAULT '',
 	reset_generation INTEGER NOT NULL DEFAULT 0,
+	enrollment_released INTEGER NOT NULL DEFAULT 0,
 	template_id TEXT NOT NULL DEFAULT '',
 	config_rev INTEGER NOT NULL DEFAULT 0,
 	config_sha TEXT NOT NULL DEFAULT '',
@@ -474,6 +476,7 @@ CREATE TABLE IF NOT EXISTS settings (
 		{"enrollment_public", `ALTER TABLE devices ADD COLUMN enrollment_public TEXT NOT NULL DEFAULT ''`},
 		{"enrollment_id", `ALTER TABLE devices ADD COLUMN enrollment_id TEXT NOT NULL DEFAULT ''`},
 		{"reset_generation", `ALTER TABLE devices ADD COLUMN reset_generation INTEGER NOT NULL DEFAULT 0`},
+		{"enrollment_released", `ALTER TABLE devices ADD COLUMN enrollment_released INTEGER NOT NULL DEFAULT 0`},
 		{"agent_version", `ALTER TABLE devices ADD COLUMN agent_version TEXT NOT NULL DEFAULT ''`},
 		{"config_rev", `ALTER TABLE devices ADD COLUMN config_rev INTEGER NOT NULL DEFAULT 0`},
 		{"config_sha", `ALTER TABLE devices ADD COLUMN config_sha TEXT NOT NULL DEFAULT ''`},
@@ -629,8 +632,8 @@ ON CONFLICT(mac) DO UPDATE SET
 }
 
 // RegisterEnrollment claims a new MAC for this device key or refreshes the
-// same claim. Even an unapproved claim cannot replace a different key or a
-// legacy device; approving a request always refers to the same identity.
+// same claim. Replacing an identity requires an explicit operator release;
+// an ordinary pending claim cannot replace another pending claim's key.
 func (s *Store) RegisterEnrollment(ctx context.Context, d Device, public, id string, generation int64) (bool, error) {
 	now := time.Now().Unix()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -640,8 +643,9 @@ func (s *Store) RegisterEnrollment(ctx context.Context, d Device, public, id str
 	defer tx.Rollback()
 	var previousKey, previousID string
 	var previousGeneration int64
-	err = tx.QueryRowContext(ctx, `SELECT enrollment_public, enrollment_id, reset_generation FROM devices WHERE mac = ?`, d.MAC).
-		Scan(&previousKey, &previousID, &previousGeneration)
+	var released bool
+	err = tx.QueryRowContext(ctx, `SELECT enrollment_public, enrollment_id, reset_generation, enrollment_released FROM devices WHERE mac = ?`, d.MAC).
+		Scan(&previousKey, &previousID, &previousGeneration, &released)
 	reset := false
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -652,6 +656,11 @@ func (s *Store) RegisterEnrollment(ctx context.Context, d Device, public, id str
 		// row whose binding an operator deliberately cleared. Either way the
 		// incoming claim is the only identity on file, so accept it no matter
 		// what generation it carries.
+	case released && (previousKey != public || previousID != id):
+		// Release authorizes one replacement even when a reflash lost both
+		// the device key and the reset counter. Keep the old credentials until
+		// replacement so an unchanged AP can still send pending heartbeats.
+		reset = true
 	case previousKey != public || generation < previousGeneration:
 		return false, nil
 	case generation == previousGeneration:
@@ -673,8 +682,10 @@ ON CONFLICT(mac) DO UPDATE SET
 	agent_version = COALESCE(NULLIF(excluded.agent_version, ''), devices.agent_version),
 	hostname = COALESCE(NULLIF(excluded.hostname, ''), devices.hostname),
 	ip = excluded.ip, last_seen = excluded.last_seen,
-	state = CASE WHEN devices.enrollment_id <> excluded.enrollment_id THEN 'pending' ELSE devices.state END,
-	template_id = CASE WHEN devices.enrollment_id <> excluded.enrollment_id THEN '' ELSE devices.template_id END,
+	state = CASE WHEN devices.enrollment_public <> excluded.enrollment_public OR devices.enrollment_id <> excluded.enrollment_id THEN 'pending' ELSE devices.state END,
+	template_id = CASE WHEN devices.enrollment_public <> excluded.enrollment_public OR devices.enrollment_id <> excluded.enrollment_id THEN '' ELSE devices.template_id END,
+	enrollment_released = CASE WHEN devices.enrollment_public <> excluded.enrollment_public OR devices.enrollment_id <> excluded.enrollment_id OR devices.reset_generation <> excluded.reset_generation THEN 0 ELSE devices.enrollment_released END,
+	enrollment_public = excluded.enrollment_public,
 	enrollment_id = excluded.enrollment_id, reset_generation = excluded.reset_generation`
 	if _, err := tx.ExecContext(ctx, q, d.MAC, d.Model, d.Firmware, d.AgentVersion, d.IP, d.Hostname, now, now, public, id, generation); err != nil {
 		return false, err
@@ -716,12 +727,9 @@ var deleteDeviceStatements = []string{
 
 // DeleteDevice removes a device and its dependent rows in one transaction.
 //
-// This is the recovery path for an AP that was re-initialised outside the
-// controller (reflash, board swap): the controller kept the old enrollment
-// binding, a re-initialised AP holds a fresh device key and its reset
-// generation restarted at zero, so enrollment is rejected with 409 forever.
 // Deleting the record lets the next enrollment register as a new identity,
-// pending adoption as usual.
+// pending adoption as usual. Release also allows identity replacement while
+// preserving the device parameters, revision counter and history.
 func (s *Store) DeleteDevice(ctx context.Context, mac string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -756,12 +764,12 @@ WHERE mac = ? AND enrollment_id = ? AND state = 'adopted'`, SettingManagementKey
 }
 
 // deviceColumns keeps SELECT lists and Scan order in one place.
-const deviceColumns = `mac, model, firmware, agent_version, ip, hostname, state, template_id, config_rev, config_sha, enrollment_id, applied_rev, applied_sha, sync_state, sync_message, sync_at, steering, last_seen, created_at, network_params, radio_overrides, fw_target, fw_state, fw_message, fw_at, uptime, reboot_period_days, reboot_at, reboot_next_at, reboot_weekday, reboot_monthday, led_on_at, led_off_at, led_on_next_at, led_off_next_at, led_state, led_state_at, led_retry_count, led_retry_at, group_id, wifi_caps, steer_stats, drift, drift_files`
+const deviceColumns = `mac, model, firmware, agent_version, ip, hostname, state, template_id, config_rev, config_sha, enrollment_id, enrollment_public, applied_rev, applied_sha, sync_state, sync_message, sync_at, steering, last_seen, created_at, network_params, radio_overrides, fw_target, fw_state, fw_message, fw_at, uptime, reboot_period_days, reboot_at, reboot_next_at, reboot_weekday, reboot_monthday, led_on_at, led_off_at, led_on_next_at, led_off_next_at, led_state, led_state_at, led_retry_count, led_retry_at, group_id, wifi_caps, steer_stats, drift, drift_files`
 
 func scanDevice(row interface{ Scan(...any) error }) (Device, error) {
 	var d Device
 	err := row.Scan(&d.MAC, &d.Model, &d.Firmware, &d.AgentVersion, &d.IP, &d.Hostname,
-		&d.State, &d.TemplateID, &d.ConfigRev, &d.ConfigSHA, &d.EnrollmentID, &d.AppliedRev, &d.AppliedSHA,
+		&d.State, &d.TemplateID, &d.ConfigRev, &d.ConfigSHA, &d.EnrollmentID, &d.EnrollmentPublic, &d.AppliedRev, &d.AppliedSHA,
 		&d.SyncState, &d.SyncMessage, &d.SyncAt, &d.Steering, &d.LastSeen, &d.CreatedAt,
 		&d.NetworkParams, &d.RadioOverrides, &d.FwTarget, &d.FWState, &d.FWMessage, &d.FWAt, &d.Uptime,
 		&d.RebootPeriodDays, &d.RebootAt, &d.RebootNextAt, &d.RebootWeekday, &d.RebootMonthday,
@@ -807,7 +815,7 @@ func (s *Store) GetDevice(ctx context.Context, mac string) (Device, error) {
 
 // MarkAdopted assigns a template and records the revision just generated.
 func (s *Store) MarkAdopted(ctx context.Context, mac, templateID string, rev int) error {
-	const q = `UPDATE devices SET state = ?, template_id = ?, config_rev = ? WHERE mac = ?`
+	const q = `UPDATE devices SET state = ?, template_id = ?, config_rev = ?, enrollment_released = 0 WHERE mac = ?`
 	res, err := s.db.ExecContext(ctx, q, StateAdopted, templateID, rev, mac)
 	if err != nil {
 		return fmt.Errorf("adopt %s: %w", mac, err)
@@ -818,11 +826,12 @@ func (s *Store) MarkAdopted(ctx context.Context, mac, templateID string, rev int
 	return nil
 }
 
-// Release returns a device to pending. The revision counter is deliberately
-// kept: re-adopting continues from the last revision instead of restarting at 1,
+// Release returns a device to pending and authorizes one identity replacement.
+// The revision counter is deliberately kept: re-adopting continues from the
+// last revision instead of restarting at 1,
 // so an AP never sees two different packages sharing the same rev.
 func (s *Store) Release(ctx context.Context, mac string) error {
-	const q = `UPDATE devices SET state = ?, template_id = '',
+	const q = `UPDATE devices SET state = ?, template_id = '', enrollment_released = 1,
 		led_retry_count = 0, led_retry_at = 0
 		WHERE mac = ?`
 	res, err := s.db.ExecContext(ctx, q, StatePending, mac)
